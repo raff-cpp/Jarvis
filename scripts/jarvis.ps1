@@ -27,6 +27,13 @@ switch ($Comando.ToLower()) {
     "stato"    { & (Join-Path $PSScriptRoot "stato-sistema.ps1") }
     "giornata" { & (Join-Path $PSScriptRoot "avvia-giornata.ps1") }
 
+    { $_ -in "voce", "avvia", "hud" } {
+        $py = Join-Path $root ".venv\Scripts\python.exe"
+        if (-not (Test-Path $py)) { $py = "python" }
+        Push-Location (Join-Path $root "voice")
+        try { & $py "app.py" } finally { Pop-Location }
+    }
+
     "todo" {
         if ($testo) {
             Append-Utf8 $todoFile ("- [ ] {0}" -f $testo)
@@ -58,6 +65,7 @@ switch ($Comando.ToLower()) {
     default {
         Write-Output @"
 Jarvis - comandi disponibili:
+  voce                 Avvia J.A.R.V.I.S. vocale (interfaccia + cervello AI)
   stato                Stato del sistema (CPU, RAM, disco)
   giornata             Apre le app di lavoro abituali
   todo                 Mostra la to-do list

@@ -1,3 +1,17 @@
+# Segreti — MAI committare
+.env
+*.env
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Dati locali di Jarvis
+memoria.json
+voice/_tmp/
+
 # Windows
 Thumbs.db
 desktop.ini

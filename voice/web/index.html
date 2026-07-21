@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>J.A.R.V.I.S.</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body data-state="boot">
+  <div class="grid-bg"></div>
+  <div class="scanline"></div>
+  <div class="vignette"></div>
+
+  <!-- Sequenza di avvio -->
+  <div id="boot" class="boot">
+    <div class="boot-inner">
+      <div class="boot-mark">J.A.R.V.I.S.</div>
+      <div id="boot-log" class="boot-log"></div>
+    </div>
+  </div>
+
+  <!-- Barra superiore -->
+  <header class="topbar">
+    <div class="brand">
+      <span class="mark">J.A.R.V.I.S.</span>
+      <span class="sub">Just A Rather Very Intelligent System</span>
+    </div>
+    <div class="status-readout">
+      <span id="state-label">INIZIALIZZAZIONE</span>
+      <span class="dot" id="state-dot"></span>
+    </div>
+    <div class="clock">
+      <span id="clock-time">--:--:--</span>
+      <span id="clock-date">--</span>
+    </div>
+  </header>
+
+  <!-- Pannello sinistro: diagnostica -->
+  <aside class="panel panel-left">
+    <h2>DIAGNOSTICA</h2>
+    <div class="stat">
+      <label>CPU</label>
+      <div class="bar"><i id="bar-cpu"></i></div>
+      <span id="val-cpu">--%</span>
+    </div>
+    <div class="stat">
+      <label>MEMORIA</label>
+      <div class="bar"><i id="bar-ram"></i></div>
+      <span id="val-ram">-- / -- GB</span>
+    </div>
+    <div class="stat">
+      <label>DISCO C:</label>
+      <div class="bar"><i id="bar-disk"></i></div>
+      <span id="val-disk">-- GB liberi</span>
+    </div>
+    <div class="stat" id="stat-battery" hidden>
+      <label>BATTERIA</label>
+      <div class="bar"><i id="bar-bat"></i></div>
+      <span id="val-bat">--%</span>
+    </div>
+    <div class="brain-line">
+      <label>CERVELLO</label>
+      <span id="brain-mode">…</span>
+    </div>
+    <div class="brain-line">
+      <label>ATTIVAZIONE</label>
+      <span id="wake-hint">di' «Jarvis»</span>
+    </div>
+  </aside>
+
+  <!-- Centro: reattore -->
+  <main class="stage">
+    <div class="reactor">
+      <canvas id="viz" width="520" height="520"></canvas>
+      <div class="ring ring-1"></div>
+      <div class="ring ring-2"></div>
+      <div class="ring ring-3"></div>
+      <div class="ticks"></div>
+      <div class="core"><div class="core-glow"></div></div>
+    </div>
+    <div class="caption" id="caption">Avvio dei sistemi…</div>
+  </main>
+
+  <!-- Pannello destro: trascrizione -->
+  <aside class="panel panel-right">
+    <h2>
+      REGISTRO
+      <button type="button" id="reset" class="mini-btn" title="Azzera la conversazione">RESET</button>
+    </h2>
+    <div id="log" class="log"></div>
+  </aside>
+
+  <!-- Controlli -->
+  <footer class="controls">
+    <button type="button" id="mic" class="mic-btn" title="Parla (clicca per attivare il microfono)">
+      <svg viewBox="0 0 24 24" width="26" height="26"><path fill="currentColor" d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V22h2v-3.08A7 7 0 0 0 19 12h-2Z"/></svg>
+    </button>
+    <label class="toggle">
+      <input type="checkbox" id="continuous">
+      <span>Ascolto continuo</span>
+    </label>
+    <label class="toggle">
+      <input type="checkbox" id="wakeword" checked>
+      <span>Parola d'attivazione</span>
+    </label>
+    <input id="text-input" class="text-input" type="text"
+           placeholder="…oppure scrivi un comando e premi Invio" autocomplete="off">
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,393 @@
+/* J.A.R.V.I.S. — logica client: voce, WebSocket, HUD */
+(() => {
+  "use strict";
+
+  const body = document.body;
+  const caption = document.getElementById("caption");
+  const stateLabel = document.getElementById("state-label");
+  const log = document.getElementById("log");
+  const micBtn = document.getElementById("mic");
+  const resetBtn = document.getElementById("reset");
+  const continuousBox = document.getElementById("continuous");
+  const wakeBox = document.getElementById("wakeword");
+  const textInput = document.getElementById("text-input");
+  const wakeHint = document.getElementById("wake-hint");
+
+  const STATE_TEXT = {
+    boot: "AVVIO", idle: "IN ATTESA", listening: "IN ASCOLTO",
+    thinking: "ELABORO", speaking: "RISPONDO", error: "ERRORE",
+  };
+
+  /* Varianti con cui il riconoscimento vocale italiano trascrive "Jarvis". */
+  const WAKE_RE = /\b(jarvis|jarviss|jervis|giarvis|charvis|djarvis|jarbis)\b[\s,.:;!?]*/i;
+  const ARM_TIMEOUT_MS = 9000;
+
+  let processing = false;   // Jarvis sta elaborando
+  let listening = false;    // riconoscimento attivo
+  let speaking = false;     // TTS in corso
+  let booted = false;
+  let armed = false;        // wake word gia sentita: prossima frase = comando
+  let armTimer = null;
+
+  function setState(s) {
+    body.dataset.state = s;
+    stateLabel.textContent = STATE_TEXT[s] || s.toUpperCase();
+  }
+
+  function addEntry(text, cls) {
+    const e = document.createElement("div");
+    e.className = "entry " + cls;
+    const who = { user: "RAFFAELE", jarvis: "JARVIS", act: "AZIONE", sys: "SISTEMA" }[cls] || "";
+    const label = document.createElement("span");
+    label.className = "who";
+    label.textContent = who;
+    e.appendChild(label);
+    e.appendChild(document.createTextNode(text));
+    log.appendChild(e);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  /* ---------- Sequenza di avvio ---------- */
+  const BOOT_LINES = [
+    "Inizializzazione nucleo…",
+    "Interfaccia vocale: online",
+    "Accesso al sistema: concesso",
+    "Diagnostica hardware: nominale",
+    "Buongiorno, Raffaele.",
+  ];
+  function runBoot() {
+    const el = document.getElementById("boot-log");
+    const overlay = document.getElementById("boot");
+    let i = 0;
+    const step = () => {
+      if (i < BOOT_LINES.length) {
+        const line = document.createElement("div");
+        line.textContent = "> " + BOOT_LINES[i++];
+        el.appendChild(line);
+        setTimeout(step, 340);
+        return;
+      }
+      setTimeout(() => {
+        overlay.classList.add("gone");
+        booted = true;
+        setState("idle");
+        caption.textContent = "Pronto. Dimmi pure, Raffaele.";
+      }, 500);
+    };
+    setTimeout(step, 350);
+  }
+
+  /* ---------- WebSocket ---------- */
+  let ws = null;
+  let retry = 0;
+
+  function connect() {
+    ws = new WebSocket("ws://" + location.host + "/ws");
+    ws.onopen = () => {
+      retry = 0;
+      if (booted) {
+        setState("idle");
+        caption.textContent = "Pronto. Dimmi pure, Raffaele.";
+      }
+    };
+    ws.onclose = () => {
+      setState("error");
+      caption.textContent = "Connessione persa. Riconnessione…";
+      retry = Math.min(retry + 1, 6);
+      setTimeout(connect, 800 * retry);
+    };
+    ws.onerror = () => { try { ws.close(); } catch (e) { /* gestito da onclose */ } };
+    ws.onmessage = (ev) => {
+      let m;
+      try { m = JSON.parse(ev.data); } catch (e) { return; }
+      if (m.type === "status") {
+        if (m.state !== "speaking") setState(m.state);
+      } else if (m.type === "action") {
+        addEntry(m.text, "act");
+        caption.textContent = m.text + "…";
+      } else if (m.type === "say") {
+        addEntry(m.text, "jarvis");
+        speak(m.text);
+      } else if (m.type === "done") {
+        processing = false;
+        if (!speaking) goIdle();
+      }
+    };
+  }
+
+  function goIdle() {
+    setState("idle");
+    if (continuousBox.checked) startListen();
+  }
+
+  function sendCommand(text) {
+    if (!text.trim()) return;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      addEntry("Connessione al server non disponibile.", "sys");
+      return;
+    }
+    disarm();
+    addEntry(text, "user");
+    processing = true;
+    setState("thinking");
+    caption.textContent = "Elaboro…";
+    ws.send(JSON.stringify({ type: "command", text }));
+  }
+
+  /* ---------- Sintesi vocale (TTS) ---------- */
+  let voice = null;
+  function pickVoice() {
+    const vs = speechSynthesis.getVoices();
+    voice =
+      vs.find((v) => /it-IT/i.test(v.lang) && /(elsa|diego|natural|online)/i.test(v.name)) ||
+      vs.find((v) => v.lang && v.lang.toLowerCase().startsWith("it")) ||
+      vs[0] || null;
+  }
+  if ("speechSynthesis" in window) {
+    pickVoice();
+    speechSynthesis.onvoiceschanged = pickVoice;
+  }
+
+  function speak(text) {
+    if (!("speechSynthesis" in window)) return;
+    stopListen();               // evita che il microfono risenta la voce di Jarvis
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    if (voice) u.voice = voice;
+    u.lang = "it-IT";
+    u.rate = 1.03;
+    u.pitch = 0.95;
+    u.onstart = () => { speaking = true; setState("speaking"); caption.textContent = text; };
+    u.onend = u.onerror = () => {
+      speaking = false;
+      if (!processing) goIdle();
+    };
+    speechSynthesis.speak(u);
+  }
+
+  function shutUp() {
+    if ("speechSynthesis" in window) speechSynthesis.cancel();
+    speaking = false;
+  }
+
+  /* ---------- Riconoscimento vocale (STT) ---------- */
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let recog = null;
+  let micGranted = false;
+
+  if (SR) {
+    recog = new SR();
+    recog.lang = "it-IT";
+    recog.interimResults = true;
+    recog.continuous = true;
+
+    recog.onstart = () => {
+      listening = true;
+      micGranted = true;
+      micBtn.classList.add("active");
+      if (!processing && !speaking) setState("listening");
+    };
+    recog.onerror = (e) => {
+      listening = false;
+      micBtn.classList.remove("active");
+      if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+        continuousBox.checked = false;
+        caption.textContent = "Microfono negato. Consenti l'accesso e riprova.";
+        addEntry("Accesso al microfono negato dal browser.", "sys");
+      }
+    };
+    recog.onend = () => {
+      listening = false;
+      micBtn.classList.remove("active");
+      // In ascolto continuo il motore si ferma da solo: lo riavviamo.
+      if (continuousBox.checked && !processing && !speaking) {
+        setTimeout(startListen, 250);
+      }
+    };
+    recog.onresult = (ev) => {
+      let interim = "", final = "";
+      for (let i = ev.resultIndex; i < ev.results.length; i++) {
+        const r = ev.results[i];
+        if (r.isFinal) final += r[0].transcript;
+        else interim += r[0].transcript;
+      }
+      if (interim && !processing) caption.textContent = "« " + interim.trim() + " »";
+      if (final.trim()) handleFinal(final.trim());
+    };
+  } else {
+    caption.textContent = "Riconoscimento vocale non disponibile. Usa il campo di testo.";
+  }
+
+  function needsWake() {
+    // La parola d'attivazione serve solo in ascolto continuo e se non siamo gia "armati".
+    return continuousBox.checked && wakeBox.checked && !armed;
+  }
+
+  function arm() {
+    armed = true;
+    clearTimeout(armTimer);
+    armTimer = setTimeout(disarm, ARM_TIMEOUT_MS);
+    body.classList.add("armed");
+    caption.textContent = "Sì, Raffaele?";
+  }
+
+  function disarm() {
+    armed = false;
+    clearTimeout(armTimer);
+    body.classList.remove("armed");
+  }
+
+  function handleFinal(transcript) {
+    if (!needsWake()) {
+      sendCommand(transcript);
+      return;
+    }
+    const m = transcript.match(WAKE_RE);
+    if (!m) return;                       // rumore di fondo: ignora
+    const after = transcript.slice(m.index + m[0].length).trim();
+    if (after) sendCommand(after);        // "Jarvis, apri Firefox"
+    else arm();                           // solo "Jarvis": resta in ascolto del comando
+  }
+
+  function startListen() {
+    if (!recog || listening || processing || speaking) return;
+    try { recog.start(); } catch (e) { /* gia avviato */ }
+  }
+  function stopListen() {
+    if (recog && listening) { try { recog.stop(); } catch (e) { /* gia fermo */ } }
+  }
+
+  micBtn.addEventListener("click", () => {
+    if (speaking) { shutUp(); }          // interrompi Jarvis e ascolta
+    if (listening) { stopListen(); disarm(); return; }
+    initViz();
+    arm();                                // il click vale come parola d'attivazione
+    startListen();
+  });
+
+  continuousBox.addEventListener("change", () => {
+    if (continuousBox.checked) { initViz(); startListen(); }
+    else { stopListen(); disarm(); }
+  });
+
+  wakeBox.addEventListener("change", () => {
+    wakeHint.textContent = wakeBox.checked ? "di' «Jarvis»" : "sempre attivo";
+    disarm();
+  });
+
+  textInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && textInput.value.trim()) {
+      shutUp();
+      sendCommand(textInput.value.trim());
+      textInput.value = "";
+    }
+  });
+
+  resetBtn.addEventListener("click", async () => {
+    shutUp();
+    try { await fetch("/api/reset", { method: "POST" }); } catch (e) { /* offline */ }
+    log.replaceChildren();
+    addEntry("Conversazione azzerata.", "sys");
+    caption.textContent = "Memoria di sessione azzerata.";
+  });
+
+  /* ---------- Visualizzatore audio attorno al reattore ---------- */
+  const canvas = document.getElementById("viz");
+  const ctx = canvas.getContext("2d");
+  let analyser = null, freq = null, vizStarted = false;
+
+  function initViz() {
+    if (vizStarted || !navigator.mediaDevices) return;
+    vizStarted = true;
+    navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
+      const ac = new (window.AudioContext || window.webkitAudioContext)();
+      const src = ac.createMediaStreamSource(stream);
+      analyser = ac.createAnalyser();
+      analyser.fftSize = 128;
+      freq = new Uint8Array(analyser.frequencyBinCount);
+      src.connect(analyser);
+    }).catch(() => { vizStarted = false; });
+  }
+
+  function drawViz() {
+    requestAnimationFrame(drawViz);
+    const w = canvas.width, h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+    const glow = getComputedStyle(body).getPropertyValue("--glow").trim() || "#35e0ff";
+    const bars = 72, R = 175;
+    const live = analyser && listening;
+    if (live) analyser.getByteFrequencyData(freq);
+
+    ctx.save();
+    ctx.translate(w / 2, h / 2);
+    for (let i = 0; i < bars; i++) {
+      let v;
+      if (live) {
+        v = freq[i % freq.length] / 255;
+      } else {
+        const t = Date.now() / 600;
+        const amp = speaking ? 0.5 : (processing ? 0.32 : 0.14);
+        v = amp * (0.5 + 0.5 * Math.sin(t + i * 0.5));
+      }
+      const len = 10 + v * 46;
+      ctx.save();
+      ctx.rotate((i / bars) * Math.PI * 2);
+      ctx.fillStyle = glow;
+      ctx.globalAlpha = 0.35 + v * 0.65;
+      ctx.fillRect(-1.6, -R, 3.2, -len);
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+  drawViz();
+
+  /* ---------- Orologio ---------- */
+  const days = ["DOMENICA", "LUNEDÌ", "MARTEDÌ", "MERCOLEDÌ", "GIOVEDÌ", "VENERDÌ", "SABATO"];
+  const months = ["GEN", "FEB", "MAR", "APR", "MAG", "GIU", "LUG", "AGO", "SET", "OTT", "NOV", "DIC"];
+  function tick() {
+    const d = new Date();
+    document.getElementById("clock-time").textContent = d.toLocaleTimeString("it-IT");
+    document.getElementById("clock-date").textContent =
+      `${days[d.getDay()]} ${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}`;
+  }
+  tick();
+  setInterval(tick, 1000);
+
+  /* ---------- Statistiche di sistema ---------- */
+  function setBar(barId, valId, pct, label) {
+    document.getElementById(barId).style.width = Math.min(100, Math.max(0, pct)) + "%";
+    document.getElementById(valId).textContent = label;
+  }
+
+  async function pollStats() {
+    try {
+      const s = await (await fetch("/api/stats")).json();
+      setBar("bar-cpu", "val-cpu", s.cpu, s.cpu + "%");
+      const ramPct = s.ramTotal ? (s.ramUsed / s.ramTotal) * 100 : 0;
+      setBar("bar-ram", "val-ram", ramPct, `${s.ramUsed} / ${s.ramTotal} GB`);
+      const diskPct = s.diskTotal ? ((s.diskTotal - s.diskFree) / s.diskTotal) * 100 : 0;
+      setBar("bar-disk", "val-disk", diskPct, `${s.diskFree} GB liberi`);
+      const batBox = document.getElementById("stat-battery");
+      if (typeof s.battery === "number" && s.battery >= 0) {
+        batBox.hidden = false;
+        setBar("bar-bat", "val-bat", s.battery, s.battery + "%");
+      } else {
+        batBox.hidden = true;
+      }
+    } catch (e) { /* il server puo essere momentaneamente occupato */ }
+  }
+  pollStats();
+  setInterval(pollStats, 6000);
+
+  async function loadInfo() {
+    try {
+      const i = await (await fetch("/api/info")).json();
+      document.getElementById("brain-mode").textContent =
+        i.has_key ? "Gemini · " + i.model : "Locale (nessuna API key)";
+    } catch (e) { /* riprovera al prossimo avvio */ }
+  }
+  loadInfo();
+
+  runBoot();
+  connect();
+})();
