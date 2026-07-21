@@ -24,9 +24,30 @@ import tools
 MODEL = os.environ.get("JARVIS_MODEL", "gemini-3.6-flash")
 MAX_TOOL_ROUNDS = 12
 
+# Il piano gratuito di Gemini limita le richieste PER MODELLO (es. 20 al giorno).
+# Quando un modello esaurisce la quota (429) passiamo al successivo: cosi le
+# richieste disponibili si moltiplicano. Ogni modello ha secchielli separati.
+_FALLBACK_MODELS = [
+    "gemini-3.6-flash", "gemini-3.5-flash", "gemini-flash-latest",
+    "gemini-3-flash-preview", "gemini-3.5-flash-lite", "gemini-flash-lite-latest",
+    "gemini-3.1-flash-lite",
+]
+_env_fallbacks = os.environ.get("JARVIS_FALLBACK_MODELS", "").strip()
+if _env_fallbacks:
+    _FALLBACK_MODELS = [m.strip() for m in _env_fallbacks.split(",") if m.strip()]
+
 # Ricerca web integrata di Google: "auto" prova ad attivarla e si disattiva da
 # sola se il modello scelto non accetta ricerca e function calling insieme.
 WEB_SEARCH = os.environ.get("JARVIS_WEB_SEARCH", "auto").strip().lower()
+
+
+class QuotaError(Exception):
+    """Tutti i modelli disponibili hanno esaurito la quota gratuita."""
+
+
+def _is_quota(e):
+    s = str(e)
+    return "RESOURCE_EXHAUSTED" in s or "'code': 429" in s or "code: 429" in s
 
 # Budget di ragionamento. Vuoto = default del modello; 0 = disattivato (piu veloce).
 _BUDGET = os.environ.get("JARVIS_THINKING_BUDGET", "").strip()
@@ -332,28 +353,55 @@ class Jarvis:
                 pass
         return types.GenerateContentConfig(**cfg)
 
-    def _generate(self):
-        """Chiama Gemini. Se la richiesta fallisce mentre la ricerca web e attiva,
-        riprova una volta senza: sulle chiavi del piano gratuito la ricerca Google
-        ha quota separata (429) e alcuni modelli non la combinano con gli strumenti.
-        Se anche il secondo tentativo fallisce, la colpa non era della ricerca:
-        la riattiva e propaga l'errore originale."""
+    def _model_chain(self):
+        """Il modello configurato per primo, poi i fallback (senza duplicati)."""
+        chain = [self.model]
+        for m in _FALLBACK_MODELS:
+            if m not in chain:
+                chain.append(m)
+        return chain
+
+    def _call_with_search_fallback(self, model):
+        """Una chiamata al modello dato. Se fallisce con la ricerca web attiva,
+        riprova una volta senza: alcuni modelli non combinano ricerca e strumenti,
+        o la ricerca ha quota separata. Se la colpa non era la ricerca, ripristina."""
         try:
             return self.client.models.generate_content(
-                model=self.model, contents=self.contents, config=self._config())
+                model=model, contents=self.contents, config=self._config())
         except Exception as first:
             if not (self._search_on and WEB_SEARCH == "auto"):
                 raise
             self._search_on = False
             try:
                 resp = self.client.models.generate_content(
-                    model=self.model, contents=self.contents, config=self._config())
+                    model=model, contents=self.contents, config=self._config())
             except Exception:
                 self._search_on = True
                 raise first
             print("[jarvis] ricerca web non disponibile su questa chiave o modello: "
                   "disattivata per questa sessione.")
             return resp
+
+    def _generate(self):
+        """Chiama Gemini scorrendo la catena di modelli: se uno esaurisce la quota
+        gratuita (429) passa al successivo, che ha secchielli separati. Il modello
+        che risponde diventa quello di default per il resto della sessione. Se TUTTI
+        sono esauriti solleva QuotaError; altri errori vengono propagati subito."""
+        last_quota = None
+        for model in self._model_chain():
+            try:
+                resp = self._call_with_search_fallback(model)
+            except Exception as e:
+                if _is_quota(e):
+                    last_quota = e
+                    print(f"[jarvis] quota esaurita su {model}, provo un altro modello.")
+                    continue
+                raise
+            if model != self.model:
+                print(f"[jarvis] passo al modello {model} per questa sessione.")
+                self.model = model
+            return resp
+        raise QuotaError(str(last_quota) if last_quota else "quota esaurita")
 
     # ---- cervello Gemini ---------------------------------------------------
     def _gemini(self, text, st, ac, say):
@@ -395,11 +443,29 @@ class Jarvis:
             else:
                 st("idle")
             return final
+        except QuotaError as e:
+            st("error")
+            self._drop_incomplete_turn()
+            msg = ("Ho esaurito le richieste gratuite di Gemini per oggi, Raffaele. "
+                   "Il piano gratuito ne concede solo una ventina al giorno per modello. "
+                   "Riprova piu tardi, oppure attiva la fatturazione su Google AI Studio "
+                   "per non avere questo limite.")
+            say(msg)
+            print("[jarvis] quota gratuita esaurita su tutti i modelli: " + redact(e))
+            return msg
         except Exception as e:
             st("error")
-            say("Ho riscontrato un errore tecnico, Raffaele.")
+            # Un messaggio piu utile del generico "errore tecnico".
+            detail = redact(e)
+            if _is_quota(e):
+                say("Sto andando troppo veloce per il piano gratuito, Raffaele. "
+                    "Aspetta un momento e riprova.")
+            else:
+                say("Non sono riuscito a completare la richiesta, Raffaele. "
+                    "Controlla la console per il dettaglio.")
             self._drop_incomplete_turn()
-            return "Errore: " + redact(e)
+            print("[jarvis] errore nel turno: " + detail, file=__import__("sys").stderr)
+            return "Errore: " + detail
 
     @staticmethod
     def _blocked_message(resp, cand):

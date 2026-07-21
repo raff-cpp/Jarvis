@@ -136,7 +136,12 @@ body[data-state="listening"] .core{animation:breathe 2s ease-in-out infinite}
 .toggle{display:flex;align-items:center;gap:8px;font-size:11px;letter-spacing:2px;
   cursor:pointer;-webkit-user-select:none;user-select:none;white-space:nowrap}
 .toggle input{accent-color:var(--glow);width:16px;height:16px}
-.text-input{flex:1;background:rgba(0,0,0,.3);border:1px solid var(--line);border-radius:8px;
+.voice-select{background:rgba(0,0,0,.3);border:1px solid var(--line);border-radius:8px;
+  color:var(--text);font-family:var(--font);font-size:11px;letter-spacing:1px;
+  padding:8px 10px;outline:none;cursor:pointer;max-width:190px}
+.voice-select:focus{border-color:var(--glow);box-shadow:0 0 10px var(--glow-dim)}
+.voice-select option{background:#08131c;color:var(--text)}
+.text-input{flex:1;min-width:120px;background:rgba(0,0,0,.3);border:1px solid var(--line);border-radius:8px;
   color:var(--text);font-family:var(--font);font-size:13px;padding:10px 14px;outline:none}
 .text-input:focus{border-color:var(--glow);box-shadow:0 0 10px var(--glow-dim)}
 

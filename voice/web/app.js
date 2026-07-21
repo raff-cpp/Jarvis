@@ -134,29 +134,84 @@
     ws.send(JSON.stringify({ type: "command", text }));
   }
 
-  /* ---------- Sintesi vocale (TTS) ---------- */
+  /* ---------- Sintesi vocale (TTS) — voce da maggiordomo ---------- */
+  const voiceSelect = document.getElementById("voice-select");
+  const VOICE_KEY = "jarvis-voce";
+  // Cadenza pacata e composta: un maggiordomo non ha fretta.
+  const RATE = 0.96, PITCH = 0.82;
+
   let voice = null;
-  function pickVoice() {
-    const vs = speechSynthesis.getVoices();
-    voice =
-      vs.find((v) => /it-IT/i.test(v.lang) && /(elsa|diego|natural|online)/i.test(v.name)) ||
-      vs.find((v) => v.lang && v.lang.toLowerCase().startsWith("it")) ||
-      vs[0] || null;
+  let voices = [];
+
+  // Nomi maschili italiani (le voci "buone" da maggiordomo) e femminili da evitare.
+  const MALE_IT = /giuseppe|cosimo|diego|calvino|gianni|lisandro|marcello|davide|thomas|guy/i;
+  const FEMALE = /elsa|isabella|bianca|elisa|federica|silvia|caterina|female|donna|google italiano/i;
+  const GOOD_QUALITY = /natural|neural|online|premium|enhanced/i;
+
+  function scoreVoice(v) {
+    const name = (v.name || "").toLowerCase();
+    const lang = (v.lang || "").toLowerCase();
+    let s = 0;
+    if (lang.startsWith("it")) s += 100;
+    else if (lang.startsWith("en")) s += 8;      // ripiego decoroso se manca l'italiano
+    if (GOOD_QUALITY.test(name)) s += 45;         // voci neurali: molto più naturali
+    if (MALE_IT.test(name)) s += 40;              // maschile = maggiordomo
+    if (FEMALE.test(name)) s -= 30;
+    return s;
   }
+
+  function loadVoices() {
+    if (!("speechSynthesis" in window)) return;
+    voices = speechSynthesis.getVoices();
+    if (!voices.length) return;
+
+    // Ordina per idoneità (migliore in cima) mantenendo prima le italiane.
+    const sorted = [...voices].sort((a, b) => scoreVoice(b) - scoreVoice(a));
+
+    // Ripopola il menu: italiane in alto, poi le altre.
+    voiceSelect.replaceChildren();
+    const itVoices = sorted.filter((v) => (v.lang || "").toLowerCase().startsWith("it"));
+    const others = sorted.filter((v) => !(v.lang || "").toLowerCase().startsWith("it"));
+    for (const group of [itVoices, others]) {
+      for (const v of group) {
+        const o = document.createElement("option");
+        o.value = v.voiceURI;
+        o.textContent = `${v.name} (${v.lang})`;
+        voiceSelect.appendChild(o);
+      }
+    }
+
+    // Scelta salvata dall'utente, altrimenti la migliore automatica.
+    const saved = localStorage.getItem(VOICE_KEY);
+    const savedVoice = saved && voices.find((v) => v.voiceURI === saved);
+    voice = savedVoice || sorted[0] || null;
+    if (voice) voiceSelect.value = voice.voiceURI;
+  }
+
   if ("speechSynthesis" in window) {
-    pickVoice();
-    speechSynthesis.onvoiceschanged = pickVoice;
+    loadVoices();
+    speechSynthesis.onvoiceschanged = loadVoices;
   }
+
+  voiceSelect.addEventListener("change", () => {
+    const chosen = voices.find((v) => v.voiceURI === voiceSelect.value);
+    if (!chosen) return;
+    voice = chosen;
+    localStorage.setItem(VOICE_KEY, chosen.voiceURI);
+    // Anteprima immediata così senti subito com'è.
+    shutUp();
+    speak("Sono a sua disposizione, Raffaele.");
+  });
 
   function speak(text) {
     if (!("speechSynthesis" in window)) return;
     stopListen();               // evita che il microfono risenta la voce di Jarvis
     speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
-    if (voice) u.voice = voice;
-    u.lang = "it-IT";
-    u.rate = 1.03;
-    u.pitch = 0.95;
+    if (voice) { u.voice = voice; u.lang = voice.lang; }
+    else u.lang = "it-IT";
+    u.rate = RATE;
+    u.pitch = PITCH;
     u.onstart = () => { speaking = true; setState("speaking"); caption.textContent = text; };
     u.onend = u.onerror = () => {
       speaking = false;

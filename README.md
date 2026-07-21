@@ -137,9 +137,32 @@ risponde `429`, anche quando il function calling funziona benissimo. In quel cas
   tempo reale (es. `wttr.in` per il meteo), e se non può dirti un dato te lo dice
   invece di inventarlo.
 
+## La voce
+
+Jarvis parla con la voce del browser. Il menu a tendina in basso (**Voce…**) elenca
+tutte le voci installate: sceglila e la scelta viene ricordata. Sentirai subito
+un'anteprima.
+
+Per una voce da maggiordomo la scelta migliore è **Microsoft Edge**, che include
+la voce italiana maschile e naturale *«Giuseppe»* (Jarvis la seleziona da solo se
+disponibile). Su Chrome le voci italiane sono più limitate e spesso femminili.
+Se vuoi la voce migliore, apri Jarvis con Edge — oppure, su Windows, installa altre
+voci da *Impostazioni → Data/ora e lingua → Voce → Aggiungi voci*.
+
+## Limiti del piano gratuito di Gemini
+
+Il piano gratuito concede circa **20 richieste al giorno per modello**. Quando un
+modello le esaurisce, Jarvis **passa automaticamente a un altro** modello (ne usa
+sette a rotazione, così hai molte più richieste al giorno). Se li esaurisci tutti,
+te lo dice chiaramente e ti invita a riprovare più tardi. Per togliere il limite,
+attiva la fatturazione su <https://aistudio.google.com/apikey>.
+
+Puoi cambiare la lista dei modelli di riserva con `JARVIS_FALLBACK_MODELS` nel
+file `.env` (nomi separati da virgola).
+
 ## Note
 
 - Riconoscimento e sintesi vocale usano le API del browser: **serve Chrome o Edge**
-  (Firefox non supporta il riconoscimento vocale).
+  (Firefox non supporta il riconoscimento vocale). Edge dà anche le voci migliori.
 - Senza chiave API, Jarvis parte comunque in modalità locale limitata (ora, stato
   sistema, apertura app).
