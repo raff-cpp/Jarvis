@@ -10,6 +10,7 @@ import base64
 import datetime
 import json
 import os
+import time
 import re
 
 try:
@@ -45,9 +46,20 @@ class QuotaError(Exception):
     """Tutti i modelli disponibili hanno esaurito la quota gratuita."""
 
 
+class BusyError(Exception):
+    """I server di Google sono momentaneamente sovraccarichi (503)."""
+
+
 def _is_quota(e):
     s = str(e)
     return "RESOURCE_EXHAUSTED" in s or "'code': 429" in s or "code: 429" in s
+
+
+def _is_transient(e):
+    """Errore server temporaneo (sovraccarico): conviene cambiare modello o ritentare."""
+    s = str(e).lower()
+    return ("503" in s or "unavailable" in s or "high demand" in s
+            or "overloaded" in s or "'code': 500" in s or "internal error" in s)
 
 # Budget di ragionamento. Vuoto = default del modello; 0 = disattivato (piu veloce).
 _BUDGET = os.environ.get("JARVIS_THINKING_BUDGET", "").strip()
@@ -383,24 +395,39 @@ class Jarvis:
             return resp
 
     def _generate(self):
-        """Chiama Gemini scorrendo la catena di modelli: se uno esaurisce la quota
-        gratuita (429) passa al successivo, che ha secchielli separati. Il modello
-        che risponde diventa quello di default per il resto della sessione. Se TUTTI
-        sono esauriti solleva QuotaError; altri errori vengono propagati subito."""
-        last_quota = None
-        for model in self._model_chain():
-            try:
-                resp = self._call_with_search_fallback(model)
-            except Exception as e:
-                if _is_quota(e):
-                    last_quota = e
-                    print(f"[jarvis] quota esaurita su {model}, provo un altro modello.")
-                    continue
-                raise
-            if model != self.model:
-                print(f"[jarvis] passo al modello {model} per questa sessione.")
-                self.model = model
-            return resp
+        """Chiama Gemini scorrendo la catena di modelli. Un modello che esaurisce la
+        quota (429) o e sovraccarico (503) viene saltato e si prova il successivo, che
+        ha secchielli separati. Il modello che risponde diventa quello di default per
+        la sessione. Se tutta la catena e sovraccarica, dopo una breve pausa ritenta.
+        Se restano solo errori di quota solleva QuotaError; se solo sovraccarichi,
+        BusyError; altri errori vengono propagati subito."""
+        last_quota = last_transient = None
+        for attempt in range(2):          # una passata completa + un retry per il 503
+            if attempt:
+                time.sleep(1.2)           # il sovraccarico e transitorio: aspetta e riprova
+            saw_transient = False
+            for model in self._model_chain():
+                try:
+                    resp = self._call_with_search_fallback(model)
+                except Exception as e:
+                    if _is_quota(e):
+                        last_quota = e
+                        print(f"[jarvis] quota esaurita su {model}, provo un altro modello.")
+                        continue
+                    if _is_transient(e):
+                        last_transient = e
+                        saw_transient = True
+                        print(f"[jarvis] {model} sovraccarico, provo un altro modello.")
+                        continue
+                    raise
+                if model != self.model:
+                    print(f"[jarvis] passo al modello {model} per questa sessione.")
+                    self.model = model
+                return resp
+            if not saw_transient:
+                break                     # solo quota: ritentare non aiuterebbe
+        if last_transient is not None:
+            raise BusyError(str(last_transient))
         raise QuotaError(str(last_quota) if last_quota else "quota esaurita")
 
     # ---- cervello Gemini ---------------------------------------------------
@@ -452,6 +479,14 @@ class Jarvis:
                    "per non avere questo limite.")
             say(msg)
             print("[jarvis] quota gratuita esaurita su tutti i modelli: " + redact(e))
+            return msg
+        except BusyError as e:
+            st("error")
+            self._drop_incomplete_turn()
+            msg = ("I server di Google sono momentaneamente sovraccarichi, Raffaele. "
+                   "Riprova tra qualche secondo.")
+            say(msg)
+            print("[jarvis] modelli sovraccarichi (503): " + redact(e))
             return msg
         except Exception as e:
             st("error")
