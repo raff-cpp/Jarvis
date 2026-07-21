@@ -105,6 +105,17 @@ def ws(conn):
         send({"type": "done"})
 
 
+def _port_in_use():
+    """True se qualcosa ascolta gia sulla porta di Jarvis."""
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(0.5)
+    try:
+        return s.connect_ex(("127.0.0.1", PORT)) == 0
+    finally:
+        s.close()
+
+
 def _serve():
     app.run(host="127.0.0.1", port=PORT, threaded=True, use_reloader=False)
 
@@ -124,6 +135,20 @@ def _open_ui(url):
 
 
 def main():
+    # Se la porta e gia occupata, un'altra istanza di Jarvis sta girando (magari
+    # un avvio precedente rimasto aperto). Aprire il browser adesso lo collegherebbe
+    # a QUEL server, forse con codice vecchio: meglio fermarsi e dirlo chiaramente.
+    if _port_in_use():
+        print("=" * 60)
+        print(f"  Jarvis e GIA in esecuzione sulla porta {PORT}.")
+        print("  Chiudi l'altra finestra di Jarvis prima di riavviarlo,")
+        print("  oppure apri direttamente http://127.0.0.1:%d/ nel browser." % PORT)
+        print("  (Se sei sicuro che non giri nulla, un processo e rimasto appeso:")
+        print("   aprilo dal Task Manager e chiudi i python.exe 'app.py', o riavvia il PC.)")
+        print("=" * 60)
+        input("\nPremi Invio per chiudere...")
+        return
+
     threading.Thread(target=_serve, daemon=True).start()
     time.sleep(1.2)
     url = f"http://127.0.0.1:{PORT}/"
