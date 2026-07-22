@@ -39,6 +39,28 @@ def _q(value):
     return "'" + str(value).replace("'", "''") + "'"
 
 
+def _clean_stderr(text):
+    """Rende leggibile lo stderr di PowerShell.
+
+    Quando stderr e rediretto, PowerShell 5.1 non scrive testo ma un blob CLIXML
+    (`#< CLIXML <Objs>...`): illeggibile per il signore e inutile per il modello.
+    Qui ne estraiamo i soli messaggi d'errore.
+    """
+    if not text or "CLIXML" not in text:
+        return text
+    parti = re.findall(r'<S S="Error">(.*?)</S>', text, re.S)
+    if not parti:
+        return text
+    msg = "".join(parti)
+    msg = msg.replace("_x000D_", "").replace("_x000A_", "\n")
+    msg = (msg.replace("&lt;", "<").replace("&gt;", ">")
+              .replace("&amp;", "&").replace("&quot;", '"').replace("&apos;", "'"))
+    # Via le righe di contorno (indicatori di posizione, CategoryInfo...).
+    righe = [r.strip() for r in msg.splitlines()
+             if r.strip() and not r.strip().startswith(("+", "~"))]
+    return "\n".join(righe).strip()
+
+
 def _run_ps(command, timeout=30):
     """Esegue un comando PowerShell, ritorna exit_code/stdout/stderr.
 
@@ -59,7 +81,7 @@ def _run_ps(command, timeout=30):
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         out = (proc.stdout or b"").decode("utf-8", "replace")
-        err = (proc.stderr or b"").decode("utf-8", "replace")
+        err = _clean_stderr((proc.stderr or b"").decode("utf-8", "replace"))
         return {
             "exit_code": proc.returncode,
             "stdout": out.strip()[:6000],
@@ -177,11 +199,14 @@ def run_powershell(command, confirm=False, timeout=30):
 
 # ---- App, file, cartelle ---------------------------------------------------
 
+# NB: usare la sintassi %VAR% e non $env:VAR — questi valori finiscono dentro
+# apici singoli di PowerShell, che sono letterali e non espandono nulla.
+# L'espansione la facciamo in Python con os.path.expandvars().
 _KNOWN_APPS = {
-    "vs code": r"$env:LOCALAPPDATA\Programs\Microsoft VS Code\Code.exe",
-    "vscode": r"$env:LOCALAPPDATA\Programs\Microsoft VS Code\Code.exe",
-    "visual studio code": r"$env:LOCALAPPDATA\Programs\Microsoft VS Code\Code.exe",
-    "codice": r"$env:LOCALAPPDATA\Programs\Microsoft VS Code\Code.exe",
+    "vs code": r"%LOCALAPPDATA%\Programs\Microsoft VS Code\Code.exe",
+    "vscode": r"%LOCALAPPDATA%\Programs\Microsoft VS Code\Code.exe",
+    "visual studio code": r"%LOCALAPPDATA%\Programs\Microsoft VS Code\Code.exe",
+    "codice": r"%LOCALAPPDATA%\Programs\Microsoft VS Code\Code.exe",
     "firefox": r"C:\Program Files\Mozilla Firefox\firefox.exe",
     "chrome": r"C:\Program Files\Google\Chrome\Application\chrome.exe",
     "google chrome": r"C:\Program Files\Google\Chrome\Application\chrome.exe",
@@ -205,7 +230,7 @@ def open_app(name):
     if not name:
         return _err("Nome app mancante.")
     key = name.strip().lower()
-    target = _KNOWN_APPS.get(key, name)
+    target = os.path.expandvars(_KNOWN_APPS.get(key, name))
     # Prova diretta, poi fallback sulla ricerca nel menu Start
     r = _run_ps(f"Start-Process {_q(target)}")
     if r["exit_code"] == 0:

@@ -20,9 +20,14 @@ except ImportError:
     genai = None
     types = None
 
+import intents
 import tools
+import webtools
 
 MODEL = os.environ.get("JARVIS_MODEL", "gemini-3.6-flash")
+
+# Comandi semplici serviti in locale, senza consumare quota (vedi intents.py).
+FAST_INTENTS = os.environ.get("JARVIS_FAST_INTENTS", "on").strip().lower() != "off"
 MAX_TOOL_ROUNDS = 12
 
 # Il piano gratuito di Gemini limita le richieste PER MODELLO (es. 20 al giorno).
@@ -120,6 +125,24 @@ TOOL_SPECS = [
           {"path": {"type": "string"}}, ["path"]),
     _spec("open_url", "Apre un indirizzo web nel browser predefinito.",
           {"url": {"type": "string"}}, ["url"]),
+
+    _spec("web_search",
+          "Cerca sul web e restituisce titoli, link e riassunti. USALO SEMPRE per "
+          "notizie, risultati sportivi, prezzi, orari e qualunque informazione "
+          "aggiornata: non rispondere mai a memoria su fatti recenti.",
+          {"query": {"type": "string"},
+           "max_results": {"type": "integer", "description": "Default 6."}},
+          ["query"]),
+    _spec("weather",
+          "Meteo attuale e previsione per una citta. Senza citta usa la posizione "
+          "rilevata dalla connessione.",
+          {"location": {"type": "string", "description": "Nome della citta."},
+           "days": {"type": "integer", "description": "Giorni di previsione (default 1)."}}),
+    _spec("fetch_page",
+          "Scarica una pagina web e ne restituisce il testo, per leggerla o riassumerla.",
+          {"url": {"type": "string"},
+           "max_chars": {"type": "integer", "description": "Default 5000."}},
+          ["url"]),
 
     _spec("list_directory", "Elenca i file di una cartella.",
           {"path": {"type": "string"}}, ["path"]),
@@ -228,6 +251,9 @@ DISPATCH = {
     "open_app": lambda i: tools.open_app(i.get("name", "")),
     "open_path": lambda i: tools.open_path(i.get("path", "")),
     "open_url": lambda i: tools.open_url(i.get("url", "")),
+    "web_search": lambda i: webtools.web_search(i.get("query", ""), i.get("max_results", 6)),
+    "weather": lambda i: webtools.weather(i.get("location", ""), i.get("days", 1)),
+    "fetch_page": lambda i: webtools.fetch_page(i.get("url", ""), i.get("max_chars", 5000)),
     "list_directory": lambda i: tools.list_directory(i.get("path", "")),
     "search_files": lambda i: tools.search_files(i.get("query", ""), i.get("root")),
     "read_file": lambda i: tools.read_file(i.get("path", ""), i.get("max_chars", 6000)),
@@ -263,6 +289,9 @@ _ACTION_LABEL = {
     "open_app": "Apro un'app",
     "open_path": "Apro un percorso",
     "open_url": "Apro il browser",
+    "web_search": "Cerco sul web",
+    "weather": "Controllo il meteo",
+    "fetch_page": "Leggo la pagina",
     "list_directory": "Elenco i file",
     "search_files": "Cerco file",
     "read_file": "Leggo un file",
@@ -295,12 +324,11 @@ _GIORNI = ["lunedi", "martedi", "mercoledi", "giovedi", "venerdi", "sabato", "do
 # Istruzioni aggiuntive quando la ricerca web di Google non e disponibile
 # (quota del piano gratuito, o modello che non la combina con gli strumenti).
 _NO_SEARCH_NOTE = """
-NOTA IMPORTANTE: la ricerca web integrata NON e disponibile in questa sessione.
-Per dati in tempo reale non inventare nulla. Puoi comunque interrogare il web con
-run_powershell e Invoke-RestMethod verso API pubbliche che non richiedono chiave,
-per esempio 'Invoke-RestMethod https://wttr.in/Milano?format=j1' per il meteo.
-Se non esiste una fonte del genere, di' semplicemente che non hai
-accesso a quel dato in tempo reale."""
+NOTA: la ricerca integrata di Google non e attiva in questa sessione, ma hai
+comunque accesso al web con i tuoi strumenti: usa web_search per cercare,
+weather per il meteo e fetch_page per leggere una pagina. Usali sempre per
+notizie, risultati, prezzi e qualunque dato aggiornato: non rispondere a memoria
+e non inventare mai."""
 
 
 def _api_key():
@@ -355,9 +383,35 @@ class Jarvis:
         st = on_status or (lambda s: None)
         ac = on_action or (lambda a: None)
         say = on_say or (lambda t: None)
+
+        # Scorciatoia: i comandi semplici li serviamo qui, senza chiamare il
+        # modello. Risposta immediata e nessuna richiesta consumata.
+        if FAST_INTENTS:
+            diretto = intents.match(text)
+            if diretto is not None:
+                frase, azione = diretto
+                if azione:
+                    ac(azione)
+                # Registriamo lo scambio nella cronologia, cosi il modello sa
+                # cosa e successo se il turno dopo dice "e adesso alzalo ancora".
+                self._record(text, frase)
+                st("speaking")
+                say(frase)
+                return frase
+
         if self.has_key:
             return self._gemini(text, st, ac, say)
         return self._local(text, st, ac, say)
+
+    def _record(self, user_text, reply):
+        """Annota nella cronologia uno scambio gestito in locale."""
+        if not self.has_key:
+            return
+        self.contents.append(
+            types.Content(role="user", parts=[types.Part.from_text(text=user_text)]))
+        self.contents.append(
+            types.Content(role="model", parts=[types.Part.from_text(text=reply)]))
+        self._trim()
 
     def reset(self):
         self.contents = []

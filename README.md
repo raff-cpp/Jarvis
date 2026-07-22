@@ -127,15 +127,38 @@ cd voice
 
 ### Ricerca web
 
-Sulle chiavi del piano gratuito la ricerca Google integrata ha **quota separata** e
-risponde `429`, anche quando il function calling funziona benissimo. In quel caso:
+La ricerca *integrata* di Google ha **quota zero** sulle chiavi gratuite (risponde
+`429` anche quando tutto il resto funziona). Jarvis quindi non la usa: ha strumenti
+web propri che non richiedono né chiave né quota.
 
-- con `JARVIS_WEB_SEARCH=auto` Jarvis se ne accorge al primo turno, la disattiva per
-  la sessione e va avanti;
-- con `off` evita anche quella chiamata sprecata;
-- in entrambi i casi ripiega su `Invoke-RestMethod` via PowerShell per i dati in
-  tempo reale (es. `wttr.in` per il meteo), e se non può dirti un dato te lo dice
-  invece di inventarlo.
+| Strumento | Fonte | A cosa serve |
+|---|---|---|
+| `web_search` | DuckDuckGo | notizie, risultati, prezzi, fatti recenti |
+| `weather` | wttr.in | meteo attuale e previsioni |
+| `fetch_page` | diretta | leggere o riassumere una pagina |
+
+Funzionano subito, senza configurazione. Se `JARVIS_WEB_SEARCH=auto` e il grounding
+Google fosse disponibile, Jarvis lo userebbe in aggiunta; con `off` (consigliato)
+evita la chiamata sprecata.
+
+## Comandi istantanei
+
+I comandi semplici non passano dall'AI: vengono riconosciuti ed eseguiti in locale,
+quindi rispondono **subito** e non consumano quota.
+
+```
+che ore sono          che giorno è          come sta il PC
+alza / abbassa il volume        metti il volume al 40        muto
+pausa      traccia successiva / precedente
+apri firefox / chrome / vs code / spotify / …
+blocca il PC          minimizza tutto       che tempo fa [a Torino]
+```
+
+Tutto il resto — *«scrivi a Marco che arrivo tardi»*, *«apri la cartella dei
+download»*, *«riassumi questa pagina»* — prosegue verso il modello. Nel dubbio la
+scorciatoia **non** interviene: meglio un secondo in più che un comando frainteso.
+
+Disattivabile con `JARVIS_FAST_INTENTS=off`.
 
 ## La voce
 
