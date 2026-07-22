@@ -10,6 +10,7 @@ import base64
 import datetime
 import json
 import os
+import threading
 import time
 import re
 
@@ -21,8 +22,15 @@ except ImportError:
     types = None
 
 import intents
+import pilota
 import tools
 import webtools
+
+# Il pilota automatico racconta a voce cosa sta per fare, e si ferma se il
+# signore dice basta. Il server collega qui la voce della HUD e il freno; senza
+# collegamento lavora in silenzio, che va bene per le prove ma non per l'uso.
+NARRATORE = lambda testo: None          # noqa: E731
+FRENO_PILOTA = threading.Event()
 
 MODEL = os.environ.get("JARVIS_MODEL", "gemini-3.6-flash")
 
@@ -247,6 +255,20 @@ TOOL_SPECS = [
           {"fact": {"type": "string"}}, ["fact"]),
     _spec("forget", "Cancella dalla memoria i fatti che contengono un certo testo.",
           {"fragment": {"type": "string"}}, ["fragment"]),
+
+    _spec("use_computer",
+          "PILOTA AUTOMATICO: usa il computer al posto del signore guardando lo schermo. "
+          "Apre programmi, clicca pulsanti, compila campi e verifica il risultato a ogni "
+          "passo. Usalo SOLO quando il compito richiede di navigare a mano un'interfaccia "
+          "grafica che nessun altro strumento sa raggiungere. Se esiste uno strumento "
+          "diretto (open_app, web_search, set_volume...) usa quello: e istantaneo, "
+          "gratuito e non puo sbagliare mira. Il pilota non compie azioni irreversibili: "
+          "niente acquisti, invii, cancellazioni o password.",
+          {"obiettivo": {"type": "string",
+                         "description": "Il compito, descritto come lo diresti a una persona."},
+           "max_passi": {"type": "integer",
+                         "description": "Tetto di mosse. Predefinito 12."}},
+          ["obiettivo"]),
 ]
 
 DISPATCH = {
@@ -287,9 +309,12 @@ DISPATCH = {
     "add_note": lambda i: tools.add_note(i.get("text", "")),
     "remember": lambda i: tools.remember(i.get("fact", "")),
     "forget": lambda i: tools.forget(i.get("fragment", "")),
+    # Il pilota ha bisogno del client e della catena di modelli, che vivono
+    # nell'istanza: viene quindi agganciato in _dispatch, non qui.
 }
 
 _ACTION_LABEL = {
+    "use_computer": "Prendo il controllo",
     "run_powershell": "Eseguo un comando",
     "open_app": "Apro un'app",
     "open_path": "Apro un percorso",
@@ -602,12 +627,30 @@ class Jarvis:
             return "La risposta era troppo lunga e si e interrotta."
         return ""
 
+    def _pilota(self, args):
+        """Avvia il pilota automatico riusando client e catena di modelli.
+
+        Sta qui e non in DISPATCH perche' ha bisogno dell'istanza: il pilota
+        parla con Gemini per conto suo, e deve poterlo fare con la stessa
+        chiave e la stessa scaletta di modelli di ripiego gia' scelta.
+        """
+        p = pilota.Pilota(self.client, self._model_chain(),
+                          narratore=NARRATORE, freno=FRENO_PILOTA)
+        esito = p.esegui(args.get("obiettivo", ""), args.get("max_passi"))
+        # Al modello serve sapere COSA e' successo per raccontarlo al signore.
+        return {"status": esito["status"], "esito": esito["esito"],
+                "message": esito["message"], "passi_compiuti": esito["passi"],
+                "cosa_ho_fatto": esito["diario"]}
+
     def _run_tool(self, fc):
         """Esegue uno strumento e costruisce la Part di risposta (testo o immagine)."""
         fn = DISPATCH.get(fc.name)
         args = dict(fc.args or {})
         try:
-            out = fn(args) if fn else {"status": "error", "message": "strumento sconosciuto"}
+            if fc.name == "use_computer":
+                out = self._pilota(args)
+            else:
+                out = fn(args) if fn else {"status": "error", "message": "strumento sconosciuto"}
         except Exception as e:
             out = {"status": "error", "message": str(e)}
 

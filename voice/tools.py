@@ -7,6 +7,7 @@ comandi potenzialmente distruttivi richiedono conferma esplicita dell'utente.
 Nessuna chiave API viene mai toccata da questo modulo.
 """
 import base64
+import ctypes
 import datetime
 import json
 import os
@@ -701,27 +702,118 @@ def media_control(action):
 
 # ---- Schermo, finestre, input ---------------------------------------------
 
-def screenshot(max_width=1400):
-    """Cattura lo schermo. Ritorna un PNG in base64 che Jarvis puo GUARDARE."""
+# ---- Occhi e mano: cattura schermo e mouse -----------------------------------
+#
+# Perche' la consapevolezza DPI e' la prima cosa e non un dettaglio: se lo
+# schermo e' scalato (125%, 150%...) un processo NON consapevole vede un
+# desktop finto e rimpicciolito, mentre il puntatore si muove su quello vero.
+# Cattura e click finirebbero in due sistemi di coordinate diversi e OGNI click
+# cadrebbe fuori bersaglio, con l'aggravante di sbagliare sempre di piu' man
+# mano che ci si allontana dall'angolo in alto a sinistra. Qui la dichiarano
+# entrambi, quindi lavorano tutti e due in pixel fisici veri.
+#
+# Su questa macchina la scalatura e' al 100% e la differenza non si vedrebbe:
+# la dichiarazione serve perche' basta collegare un portatile 4K per rompere
+# tutto in modo silenzioso e difficilissimo da diagnosticare.
+
+_PS_DPI = r'''
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public class JvDpi {
+  [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr v);
+  // -4 = PER_MONITOR_AWARE_V2: coordinate in pixel fisici su ogni monitor.
+  public static void Aware() { try { SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch {} }
+}
+"@ -ErrorAction SilentlyContinue
+try { [JvDpi]::Aware() } catch {}
+'''
+
+
+def _dpi_python():
+    """Rende consapevole del DPI il processo Python (quello che muove il mouse)."""
+    try:
+        ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+    except Exception:
+        try:                       # Windows piu' vecchi
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except Exception:
+            pass
+
+
+_dpi_python()
+
+
+def _cattura(max_width=1400, monitor="attivo"):
+    """Cattura lo schermo e restituisce ANCHE la geometria.
+
+    La geometria non e' un di piu': senza sapere dove comincia l'area
+    catturata e di quanto l'immagine e' stata rimpicciolita, non si puo'
+    ritradurre in un punto dello schermo cio' che il modello indica
+    sull'immagine. Con piu' monitor l'origine puo' pure essere negativa.
+
+    monitor="attivo" cattura SOLO lo schermo che contiene la finestra in primo
+    piano, ed e' il valore giusto per il pilota automatico. Con due monitor
+    affiancati l'intero desktop e' 3840x1080: rimpicciolito per il modello
+    diventa 1400x394, dove le scritte dei pulsanti sono illeggibili e il
+    pilota clicca a caso. Un monitor solo diventa 1400x788, cioe' leggibile.
+    """
     os.makedirs(TMP, exist_ok=True)
     path = os.path.join(TMP, f"shot_{uuid.uuid4().hex[:8]}.png")
-    ps = (
-        "Add-Type -AssemblyName System.Windows.Forms,System.Drawing;"
-        "$b=[System.Windows.Forms.SystemInformation]::VirtualScreen;"
-        "$src=New-Object System.Drawing.Bitmap($b.Width,$b.Height);"
-        "$g=[System.Drawing.Graphics]::FromImage($src);"
-        "$g.CopyFromScreen($b.Location,[System.Drawing.Point]::Empty,$b.Size);"
-        f"$mw={int(max_width)};"
-        "if($src.Width -gt $mw){"
-        "$nh=[int]($src.Height*$mw/$src.Width);"
-        "$dst=New-Object System.Drawing.Bitmap($mw,$nh);"
-        "$g2=[System.Drawing.Graphics]::FromImage($dst);"
-        "$g2.InterpolationMode='HighQualityBicubic';"
-        "$g2.DrawImage($src,0,0,$mw,$nh);"
-        f"$dst.Save({_q(path)},[System.Drawing.Imaging.ImageFormat]::Png);"
-        "$g2.Dispose();$dst.Dispose()}"
-        f"else{{$src.Save({_q(path)},[System.Drawing.Imaging.ImageFormat]::Png)}}"
-        "$g.Dispose();$src.Dispose()"
+    if monitor == "tutti":
+        scelta = "$b=[System.Windows.Forms.SystemInformation]::VirtualScreen\n"
+    elif isinstance(monitor, int) or (isinstance(monitor, str) and monitor.isdigit()):
+        scelta = (f"$i=[int]{int(monitor)}\n"
+                  "$s=@([System.Windows.Forms.Screen]::AllScreens | Sort-Object {$_.Bounds.X})\n"
+                  "if($i -ge $s.Count){$i=0}\n"
+                  "$b=$s[$i].Bounds\n")
+    else:
+        # Lo schermo che contiene la finestra attiva; se non si capisce, il
+        # primario. Mai l'intero desktop: perderemmo meta' della risoluzione.
+        scelta = (
+            "$h=[JvCat]::GetForegroundWindow()\n"
+            "$b=$null\n"
+            "if($h -ne [IntPtr]::Zero){\n"
+            "  $r=New-Object JvCat+RECT\n"
+            "  if([JvCat]::GetWindowRect($h,[ref]$r)){\n"
+            "    $cx=[int](($r.Left+$r.Right)/2); $cy=[int](($r.Top+$r.Bottom)/2)\n"
+            "    $p=New-Object System.Drawing.Point($cx,$cy)\n"
+            "    $b=[System.Windows.Forms.Screen]::FromPoint($p).Bounds\n"
+            "  }\n"
+            "}\n"
+            "if($null -eq $b){$b=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds}\n"
+        )
+    ps = _PS_DPI + (
+        "Add-Type -AssemblyName System.Windows.Forms,System.Drawing\n"
+        "Add-Type -TypeDefinition @\"\n"
+        "using System;\n"
+        "using System.Runtime.InteropServices;\n"
+        "public class JvCat {\n"
+        "  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }\n"
+        "  [DllImport(\"user32.dll\")] public static extern IntPtr GetForegroundWindow();\n"
+        "  [DllImport(\"user32.dll\")] public static extern bool GetWindowRect(IntPtr h, out RECT r);\n"
+        "}\n"
+        "\"@ -ErrorAction SilentlyContinue\n"
+        + scelta +
+        "$src=New-Object System.Drawing.Bitmap($b.Width,$b.Height)\n"
+        "$g=[System.Drawing.Graphics]::FromImage($src)\n"
+        "$g.CopyFromScreen($b.Location,[System.Drawing.Point]::Empty,$b.Size)\n"
+        f"$mw={int(max_width)}\n"
+        "if($src.Width -gt $mw){\n"
+        "  $nh=[int]($src.Height*$mw/$src.Width)\n"
+        "  $dst=New-Object System.Drawing.Bitmap($mw,$nh)\n"
+        "  $g2=[System.Drawing.Graphics]::FromImage($dst)\n"
+        "  $g2.InterpolationMode='HighQualityBicubic'\n"
+        "  $g2.DrawImage($src,0,0,$mw,$nh)\n"
+        f"  $dst.Save({_q(path)},[System.Drawing.Imaging.ImageFormat]::Png)\n"
+        "  $iw=$dst.Width; $ih=$dst.Height\n"
+        "  $g2.Dispose();$dst.Dispose()\n"
+        "} else {\n"
+        f"  $src.Save({_q(path)},[System.Drawing.Imaging.ImageFormat]::Png)\n"
+        "  $iw=$src.Width; $ih=$src.Height\n"
+        "}\n"
+        "$g.Dispose();$src.Dispose()\n"
+        "'GEO {0} {1} {2} {3} {4} {5}' -f $b.X,$b.Y,$b.Width,$b.Height,$iw,$ih\n"
     )
     r = _run_ps(ps, timeout=40)
     if not os.path.exists(path):
@@ -734,8 +826,237 @@ def screenshot(max_width=1400):
             os.remove(path)
         except OSError:
             pass
-    # Il brain trasforma questo dict in un blocco immagine per il modello.
-    return {"status": "ok", "image_base64": data, "media_type": "image/png"}
+    geo = None
+    for riga in r["stdout"].splitlines():
+        if riga.startswith("GEO "):
+            p = riga.split()
+            if len(p) == 7:
+                try:
+                    geo = [int(x) for x in p[1:]]
+                except ValueError:
+                    geo = None
+    if not geo:
+        return _err("Geometria dello schermo non leggibile: senza, i click "
+                    "finirebbero nel posto sbagliato.")
+    left, top, larghezza, altezza, img_w, img_h = geo
+    return {"status": "ok", "image_base64": data, "media_type": "image/png",
+            "left": left, "top": top, "larghezza": larghezza, "altezza": altezza,
+            "img_w": img_w, "img_h": img_h}
+
+
+def screenshot(max_width=1400):
+    """Cattura lo schermo. Ritorna un PNG in base64 che Jarvis puo GUARDARE."""
+    r = _cattura(max_width)
+    if r.get("status") != "ok":
+        return r
+    # Il brain trasforma questo dict in un blocco immagine per il modello: gli
+    # si passa solo cio' che gli serve, la geometria e' affare del pilota.
+    return {"status": "ok", "image_base64": r["image_base64"],
+            "media_type": r["media_type"]}
+
+
+def rect_finestra(frammento_titolo):
+    """Rettangolo sullo schermo della prima finestra col titolo indicato.
+
+    Serve al pilota automatico per sapere DOVE NON cliccare: se cliccasse
+    dentro la finestra di Jarvis comanderebbe se stesso, e sarebbe un anello di
+    retroazione che non si spezza da solo.
+    """
+    frammento = (frammento_titolo or "").strip()
+    if not frammento:
+        return _err("Titolo mancante.")
+    ps = _PS_DPI + (
+        "Add-Type -TypeDefinition @\"\n"
+        "using System;\n"
+        "using System.Runtime.InteropServices;\n"
+        "public class JvRect {\n"
+        "  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }\n"
+        "  [DllImport(\"user32.dll\")] public static extern bool GetWindowRect(IntPtr h, out RECT r);\n"
+        "}\n"
+        "\"@ -ErrorAction SilentlyContinue\n"
+        "$p = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and "
+        f"$_.MainWindowTitle -like {_q('*' + frammento + '*')} " "} | Select-Object -First 1\n"
+        "if ($p) {\n"
+        "  $r = New-Object JvRect+RECT\n"
+        "  if ([JvRect]::GetWindowRect($p.MainWindowHandle, [ref]$r)) {\n"
+        "    'RECT {0} {1} {2} {3}' -f $r.Left,$r.Top,$r.Right,$r.Bottom\n"
+        "  }\n"
+        "}\n"
+    )
+    r = _run_ps(ps, timeout=20)
+    for riga in r["stdout"].splitlines():
+        if riga.startswith("RECT "):
+            p = riga.split()
+            if len(p) == 5:
+                try:
+                    l, t, rr, b = (int(v) for v in p[1:])
+                except ValueError:
+                    break
+                return _ok(left=l, top=t, right=rr, bottom=b)
+    return _err("Finestra non trovata.")
+
+
+def punto_schermo(x1000, y1000, geo):
+    """Traduce un punto indicato dal modello (0-1000) in un pixel dello schermo.
+
+    Il modello guarda un'immagine rimpicciolita e ragiona in coordinate
+    normalizzate; il mouse vive nei pixel veri del desktop, che con piu'
+    monitor puo' partire da un'origine negativa. Qui in mezzo c'e' l'unico
+    calcolo che, se sbagliato, manda ogni singolo click fuori bersaglio: per
+    questo e' una funzione pura, isolata e coperta da test.
+    """
+    fx = min(max(float(x1000), 0.0), 1000.0) / 1000.0
+    fy = min(max(float(y1000), 0.0), 1000.0) / 1000.0
+    x = int(round(geo["left"] + fx * geo["larghezza"]))
+    y = int(round(geo["top"] + fy * geo["altezza"]))
+    # Un punto sul bordo destro/basso cadrebbe appena FUORI dallo schermo.
+    x = min(x, geo["left"] + geo["larghezza"] - 1)
+    y = min(y, geo["top"] + geo["altezza"] - 1)
+    return x, y
+
+
+# ---- Mouse -------------------------------------------------------------------
+#
+# In Python con ctypes e non in PowerShell: qui non serve avviare un processo
+# (0,35 s) e soprattutto non c'e' nessuna virgoletta da far sopravvivere a due
+# livelli di escape, che in questo progetto ha gia' prodotto danni.
+#
+# SendInput e non mouse_event: quest'ultimo e' deprecato da vent'anni e
+# Microsoft stessa lo sconsiglia. SetCursorPos per lo spostamento perche'
+# accetta direttamente le coordinate del desktop virtuale, comprese quelle
+# negative del monitor a sinistra del principale; le coordinate assolute di
+# SendInput andrebbero invece normalizzate a 0-65535 sul solo monitor
+# primario, ed e' una sorgente classica di click fuori bersaglio.
+
+_INPUT_MOUSE = 0
+_MOVE, _ABSOLUTE = 0x0001, 0x8000
+_TASTI = {                       # (giu', su)
+    "left": (0x0002, 0x0004),
+    "right": (0x0008, 0x0010),
+    "middle": (0x0020, 0x0040),
+}
+_WHEEL, _HWHEEL = 0x0800, 0x1000
+_ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
+
+
+class _MOUSEINPUT(ctypes.Structure):
+    _fields_ = [("dx", ctypes.c_long), ("dy", ctypes.c_long),
+                ("mouseData", ctypes.c_ulong), ("dwFlags", ctypes.c_ulong),
+                ("time", ctypes.c_ulong), ("dwExtraInfo", ctypes.POINTER(_ULONG_PTR))]
+
+
+class _INPUT(ctypes.Structure):
+    class _U(ctypes.Union):
+        _fields_ = [("mi", _MOUSEINPUT)]
+    _anonymous_ = ("u",)
+    _fields_ = [("type", ctypes.c_ulong), ("u", _U)]
+
+
+class _POINT(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
+def _invia(flags, dati=0):
+    ev = _INPUT(type=_INPUT_MOUSE,
+                mi=_MOUSEINPUT(0, 0, dati, flags, 0, None))
+    n = ctypes.windll.user32.SendInput(1, ctypes.byref(ev), ctypes.sizeof(ev))
+    return n == 1
+
+
+def posizione_mouse():
+    p = _POINT()
+    ctypes.windll.user32.GetCursorPos(ctypes.byref(p))
+    return p.x, p.y
+
+
+def _dentro_schermo(x, y):
+    u = ctypes.windll.user32
+    sx, sy = u.GetSystemMetrics(76), u.GetSystemMetrics(77)
+    sw, sh = u.GetSystemMetrics(78), u.GetSystemMetrics(79)
+    return sx <= x < sx + sw and sy <= y < sy + sh
+
+
+def mouse_move(x, y, morbido=True):
+    """Porta il puntatore in (x, y), in pixel dello schermo.
+
+    Il movimento e' graduale e non un teletrasporto: i menu a tendina, le
+    barre degli strumenti e i suggerimenti si aprono al PASSAGGIO del mouse, e
+    con un salto istantaneo il programma non riceve mai gli eventi intermedi.
+    Molte voci di menu sarebbero semplicemente irraggiungibili.
+    """
+    x, y = int(x), int(y)
+    if not _dentro_schermo(x, y):
+        return _err(f"Punto ({x}, {y}) fuori dallo schermo: non ci clicco.")
+    if morbido:
+        x0, y0 = posizione_mouse()
+        passi = 12
+        for i in range(1, passi):
+            k = i / passi
+            ctypes.windll.user32.SetCursorPos(int(round(x0 + (x - x0) * k)),
+                                              int(round(y0 + (y - y0) * k)))
+            time.sleep(0.008)
+    ctypes.windll.user32.SetCursorPos(x, y)
+    time.sleep(0.05)         # tempo perche' l'interfaccia registri il passaggio
+    return _ok(x=x, y=y)
+
+
+def mouse_click(x=None, y=None, tasto="left", doppio=False):
+    """Clicca, eventualmente dopo essersi spostato in (x, y)."""
+    tasto = (tasto or "left").lower()
+    if tasto not in _TASTI:
+        return _err(f"Tasto '{tasto}' sconosciuto.")
+    if x is not None and y is not None:
+        r = mouse_move(x, y)
+        if r.get("status") != "ok":
+            return r
+    giu, su = _TASTI[tasto]
+    volte = 2 if doppio else 1
+    for i in range(volte):
+        if not _invia(giu) or not _invia(su):
+            return _err("Windows ha rifiutato l'invio del click.")
+        if i == 0 and doppio:
+            time.sleep(0.06)     # sotto la soglia di sistema del doppio click
+    px, py = posizione_mouse()
+    return _ok(message=f"Click {tasto}{' doppio' if doppio else ''} in ({px}, {py}).",
+               x=px, y=py)
+
+
+def mouse_scroll(passi=3, orizzontale=False):
+    """Scorre la rotellina: passi positivi = su (o a destra)."""
+    try:
+        n = int(passi)
+    except (TypeError, ValueError):
+        return _err("Numero di passi non valido.")
+    n = max(-30, min(30, n))
+    for _ in range(abs(n)):
+        # 120 = una tacca, l'unita' standard di Windows.
+        if not _invia(_HWHEEL if orizzontale else _WHEEL,
+                      120 if n > 0 else -120):
+            return _err("Windows ha rifiutato lo scorrimento.")
+        time.sleep(0.02)
+    return _ok(message=f"Scorrimento di {n} tacche.")
+
+
+def mouse_drag(x1, y1, x2, y2, tasto="left"):
+    """Trascina da un punto all'altro tenendo premuto."""
+    tasto = (tasto or "left").lower()
+    if tasto not in _TASTI:
+        return _err(f"Tasto '{tasto}' sconosciuto.")
+    r = mouse_move(x1, y1)
+    if r.get("status") != "ok":
+        return r
+    giu, su = _TASTI[tasto]
+    if not _invia(giu):
+        return _err("Windows ha rifiutato la pressione del tasto.")
+    try:
+        # Il trascinamento DEVE essere graduale: molti programmi iniziano il
+        # trascinamento solo dopo aver visto il puntatore muoversi da premuto.
+        r = mouse_move(x2, y2)
+    finally:
+        _invia(su)               # il tasto va rilasciato anche in caso di guaio
+    if r.get("status") != "ok":
+        return r
+    return _ok(message=f"Trascinato da ({x1}, {y1}) a ({x2}, {y2}).")
 
 
 def _paste_script(text, restore=True):

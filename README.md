@@ -340,6 +340,67 @@ analizzatore di spettro e le barre si muovono sulle **sillabe reali**, simmetric
 sui due lati. Quando invece sei tu a parlare, l'anello segue il microfono; quando
 non c'è audio torna all'animazione di riposo.
 
+## Pilota automatico: usare il computer al posto tuo
+
+Tutto il resto del progetto sa **già** cosa fare («alza il volume» → una
+chiamata). Qui no: nessuno sa in anticipo dove sarà il pulsante da premere.
+
+> **«Jarvis, apri le impostazioni e dimmi che versione di Windows ho.»**
+>
+> *«Apro le impostazioni.»* — *«Scorro in basso.»* — *«Premo Informazioni sul
+> dispositivo.»* — *«Windows 11 Pro, versione 25H2.»*
+
+Il ciclo è quello di una persona davanti allo schermo: **guarda → decidi la
+prossima mossa → falla → RIGUARDA per vedere com'è andata**. È la rilettura a
+ogni passo che gli permette di accorgersi di aver sbagliato invece di
+proseguire alla cieca. Non è una macro registrata: se la finestra cambia
+posizione, lui la *vede* e si adatta.
+
+Nove mosse possibili: `clicca`, `scrivi`, `premi`, `scorri`, `trascina`,
+`apri`, `attendi`, `fatto`, `rinuncia`.
+
+### Le protezioni vengono prima delle funzioni
+
+È la cosa più invasiva del progetto — un programma che clicca da solo — quindi:
+
+| Protezione | Come funziona |
+|---|---|
+| **Niente azioni irreversibili** | Acquisti, pagamenti, invio di messaggi, cancellazioni e password **non sono tra le mosse disponibili**. Non è questione di buona volontà del modello: non esistono proprio. Se l'obiettivo le richiede, arriva al passo precedente e ti passa la mano. |
+| **Racconta prima di agire** | Ogni mossa viene pronunciata *prima* di essere compiuta. |
+| **«Basta» ferma le mani** | La stessa parola che lo zittisce a metà frase. La mossa appena annunciata **non viene compiuta**: annuncia, ricontrolla il freno, e solo allora agisce. |
+| **Tetto di passi** | Dodici di default. Un pilota che si avvita si ferma da solo invece di bruciare quota. |
+| **Non può pilotare se stesso** | I click dentro la finestra di Jarvis vengono rifiutati: sarebbe un anello di retroazione che non si spezza da solo. |
+
+### Cosa devi sapere prima di usarlo
+
+**Costa.** Ogni mossa è una richiesta a Gemini **con una schermata allegata**.
+La prova qui sopra sono state 5 richieste in 47 secondi. Sul piano gratuito è
+roba da qualche compito al giorno, non da uso continuo.
+
+**Sbaglia.** Cliccherà nel punto sbagliato, ogni tanto. La verifica visiva a
+ogni passo serve proprio a permettergli di accorgersene e correggere.
+
+**Non tocca le finestre di sistema elevate.** Windows impedisce a un programma
+normale di inviare click a una finestra amministrativa (UAC, alcune parti del
+Task Manager). Il pilota se ne accorge perché lo schermo non cambia, e rinuncia.
+
+**Guarda un monitor solo** — quello dove sta la finestra attiva. Con i tuoi due
+schermi affiancati l'intero desktop sarebbe 3840×1080, che rimpicciolito per il
+modello diventa 1400×394: le scritte dei pulsanti diventano illeggibili e il
+pilota clicca a caso. Un monitor solo diventa 1400×788, cioè leggibile.
+
+### Sotto il cofano, se ti serve metterci mano
+
+Il punto fragile è uno solo: il modello indica i punti su una griglia 0–1000
+dell'immagine, il mouse vive nei pixel veri del desktop. La traduzione è in
+`tools.punto_schermo()` — funzione pura, isolata e coperta da test proprio
+perché se sbaglia lei sbagliano **tutti** i click. Cattura e puntatore
+dichiarano entrambi la consapevolezza DPI: senza, su uno schermo scalato
+vivrebbero in due sistemi di coordinate diversi e ogni click cadrebbe fuori
+bersaglio in modo silenzioso e difficilissimo da diagnosticare.
+
+Il tetto di passi si regola con `JARVIS_PILOTA_MAX_PASSI` nel `.env`.
+
 ## Scrivere al posto tuo
 
 Jarvis può usare la tastiera:

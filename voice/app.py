@@ -26,6 +26,7 @@ import briefing                  # noqa: E402
 import speech                    # noqa: E402
 import tools                     # noqa: E402
 import watcher                   # noqa: E402
+import brain                      # noqa: E402
 from brain import Jarvis, redact  # noqa: E402
 
 WEB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
@@ -137,6 +138,19 @@ def announce():
     if not testo:
         return jsonify({"error": "testo mancante"}), 400
     return jsonify({"delivered": _annuncia(testo[:400])})
+
+
+@app.route("/api/pilota/stop", methods=["POST"])
+def pilota_stop():
+    """Freno del pilota automatico.
+
+    La HUD lo tira quando dici "basta": la stessa parola che gia' zittisce
+    Jarvis a meta' frase deve poter fermare anche le sue mani. Il freno viene
+    controllato tra un passo e l'altro, e la mossa appena annunciata NON viene
+    compiuta.
+    """
+    brain.FRENO_PILOTA.set()
+    return jsonify({"status": "ok"})
 
 
 @app.route("/api/stats")
@@ -426,6 +440,10 @@ BRIEFING_AUTO = os.environ.get("JARVIS_BRIEFING_AUTO", "on").strip().lower() != 
 CITTA = os.environ.get("JARVIS_CITTA", "").strip()
 
 _watcher = watcher.Watcher(_annuncia)
+
+# Il pilota automatico racconta ogni mossa PRIMA di compierla: e' cosi' che
+# puoi accorgerti in tempo che sta sbagliando e fermarlo con "basta".
+brain.NARRATORE = _annuncia
 
 # Due strade portano al briefing (l'avvio del server e il tuo arrivo davanti
 # alla webcam): il lucchetto impedisce che partano insieme e lo dicano due volte.

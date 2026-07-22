@@ -382,6 +382,11 @@
     }
     if ("speechSynthesis" in window) speechSynthesis.cancel();
     speaking = false;
+    /* "Basta" non deve zittire soltanto la sua voce: se il pilota automatico
+       sta usando il computer, deve fermare anche le sue mani. E' la stessa
+       parola per entrambe le cose perche' nel momento in cui vuoi fermarlo non
+       hai tempo di ricordarti due comandi diversi. */
+    fetch("/api/pilota/stop", { method: "POST" }).catch(() => {});
   }
 
   /* ---------- Riconoscimento vocale (STT) ---------- */
