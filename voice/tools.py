@@ -40,18 +40,30 @@ def _q(value):
 
 
 def _run_ps(command, timeout=30):
-    """Esegue un comando PowerShell, ritorna exit_code/stdout/stderr."""
+    """Esegue un comando PowerShell, ritorna exit_code/stdout/stderr.
+
+    Il comando viaggia come -EncodedCommand (UTF-16LE in base64): e l'unico modo
+    affidabile per far arrivare a PowerShell accenti e simboli senza che la
+    codepage della console (cp1252) li rovini. Allo stesso modo l'output viene
+    letto come byte e decodificato in UTF-8: con text=True Python userebbe la
+    codepage locale e andrebbe in UnicodeDecodeError sui caratteri accentati.
+    """
+    wrapped = ("[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
+               "$OutputEncoding=[System.Text.Encoding]::UTF8;" + command)
+    encoded = base64.b64encode(wrapped.encode("utf-16-le")).decode("ascii")
     try:
         proc = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive",
-             "-ExecutionPolicy", "Bypass", "-Command", command],
-            capture_output=True, text=True, timeout=timeout,
+             "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
+            capture_output=True, timeout=timeout,       # byte grezzi, decodifichiamo noi
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
+        out = (proc.stdout or b"").decode("utf-8", "replace")
+        err = (proc.stderr or b"").decode("utf-8", "replace")
         return {
             "exit_code": proc.returncode,
-            "stdout": (proc.stdout or "").strip()[:6000],
-            "stderr": (proc.stderr or "").strip()[:2000],
+            "stdout": out.strip()[:6000],
+            "stderr": err.strip()[:2000],
         }
     except subprocess.TimeoutExpired:
         return {"exit_code": -1, "stdout": "", "stderr": f"Timeout dopo {timeout}s"}
@@ -78,7 +90,9 @@ def _run_ps_detached(script):
     os.makedirs(TMP, exist_ok=True)
     _purge_tmp()
     path = os.path.join(TMP, f"j_{uuid.uuid4().hex[:8]}.ps1")
-    with open(path, "w", encoding="utf-8") as f:
+    # BOM obbligatorio: senza, PowerShell 5.1 legge il file come ANSI e
+    # storpia accenti e simboli nelle notifiche.
+    with open(path, "w", encoding="utf-8-sig") as f:
         f.write(script)
     subprocess.Popen(
         ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
@@ -86,6 +100,41 @@ def _run_ps_detached(script):
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     return path
+
+
+_FG_TITLE_PS = '''Add-Type @"
+using System;using System.Runtime.InteropServices;using System.Text;
+public class JvFg {
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+  public static string Title(){ var sb=new StringBuilder(300); GetWindowText(GetForegroundWindow(), sb, 300); return sb.ToString(); }
+}
+"@ -ErrorAction SilentlyContinue
+[JvFg]::Title()'''
+
+
+def foreground_window():
+    """Titolo della finestra in primo piano (quella che ricevera i tasti)."""
+    r = _run_ps(_FG_TITLE_PS, timeout=30)
+    return r["stdout"].strip()
+
+
+def _focus_and_verify(match, attempts=3, pause=1.2):
+    """Porta avanti una finestra e CONFERMA che sia davvero in primo piano.
+
+    SendKeys scrive nella finestra attiva qualunque essa sia: senza questa
+    verifica un messaggio potrebbe finire nell'editor di codice del signore.
+    """
+    needles = [m.lower() for m in (match if isinstance(match, (list, tuple)) else [match])]
+    for i in range(attempts):
+        title = foreground_window()
+        if any(n in title.lower() for n in needles):
+            return True, title
+        # Prova a portarla in primo piano e riguarda.
+        _run_ps("$w=New-Object -ComObject WScript.Shell;"
+                f"$null=$w.AppActivate({_q(needles[0])})", timeout=20)
+        time.sleep(pause)
+    return False, foreground_window()
 
 
 def _ok(**kw):
@@ -117,7 +166,7 @@ def run_powershell(command, confirm=False, timeout=30):
         return {
             "status": "needs_confirmation",
             "message": ("Comando potenzialmente distruttivo o irreversibile. "
-                        "Spiega a Raffaele cosa succedera e chiedi conferma esplicita, "
+                        "Spiega al signore cosa succedera e chiedi conferma esplicita, "
                         "poi richiama lo stesso comando con confirm=true."),
             "command": command,
         }
@@ -255,7 +304,7 @@ def write_file(path, content, append=False, confirm=False):
         return {
             "status": "needs_confirmation",
             "message": (f"Il file {path} esiste gia e verrebbe sovrascritto. "
-                        "Chiedi conferma a Raffaele, poi richiama con confirm=true."),
+                        "Chiedi conferma al signore, poi richiama con confirm=true."),
             "path": path,
         }
     try:
@@ -318,7 +367,7 @@ def kill_process(name_or_pid, confirm=False):
         return {
             "status": "needs_confirmation",
             "message": (f"Sto per terminare '{name_or_pid}'. Eventuali dati non salvati andranno persi. "
-                        "Chiedi conferma a Raffaele, poi richiama con confirm=true."),
+                        "Chiedi conferma al signore, poi richiama con confirm=true."),
             "target": str(name_or_pid),
         }
     target = str(name_or_pid)
@@ -348,7 +397,7 @@ def power_control(action, confirm=False):
     if action != "lock" and not confirm:
         return {
             "status": "needs_confirmation",
-            "message": (f"Sto per eseguire '{action}' sul PC. Avvisa Raffaele di salvare il lavoro "
+            "message": (f"Sto per eseguire '{action}' sul PC. Avvisa il signore di salvare il lavoro "
                         "e chiedi conferma, poi richiama con confirm=true."),
             "action": action,
         }
@@ -442,17 +491,130 @@ def screenshot(max_width=1400):
     return {"status": "ok", "image_base64": data, "media_type": "image/png"}
 
 
-def type_text(text):
-    """Digita del testo nella finestra attiva (automazione tastiera)."""
+def _paste_script(text, restore=True):
+    """PowerShell che incolla `text` nella finestra attiva tramite gli appunti.
+
+    Molto piu affidabile di SendKeys carattere per carattere: SendKeys sbaglia
+    accenti, simboli e a capo, e tratta +^%~(){}[] come modificatori.
+    """
+    lines = ["$w = New-Object -ComObject WScript.Shell"]
+    if restore:
+        lines.append("$vecchio = Get-Clipboard -Raw -ErrorAction SilentlyContinue")
+    lines += [
+        f"Set-Clipboard -Value {_q(text)}",
+        "Start-Sleep -Milliseconds 150",
+        "$w.SendKeys('^v')",
+        "Start-Sleep -Milliseconds 300",
+    ]
+    if restore:
+        # Ripristina gli appunti: non vogliamo rubare quello che c'era prima.
+        lines.append("if ($vecchio) { Set-Clipboard -Value $vecchio }")
+    return ";".join(lines)
+
+
+def type_text(text, expect_window=None, method="paste"):
+    """Digita del testo nella finestra attiva (automazione tastiera).
+
+    Se `expect_window` e indicato, il testo viene scritto SOLO se il titolo della
+    finestra in primo piano lo contiene: evita di scrivere per sbaglio dentro un
+    documento o un editor che il signore aveva aperto.
+    """
     if not text:
         return _err("Testo mancante.")
-    # SendKeys tratta questi caratteri come modificatori: vanno protetti fra graffe.
+    if expect_window:
+        titolo = foreground_window()
+        if str(expect_window).lower() not in titolo.lower():
+            return _err(f"Non scrivo: mi aspettavo la finestra '{expect_window}' ma "
+                        f"davanti c'e '{titolo}'. Mettila a fuoco e riprova.")
+    if str(method).lower() != "sendkeys":
+        r = _run_ps(_paste_script(str(text)), timeout=40)
+        if r["exit_code"] == 0:
+            return _ok(message=f"Scritto: {str(text)[:60]}")
+        # Se gli appunti non sono accessibili, ripiega su SendKeys.
     escaped = re.sub(r"([+^%~(){}\[\]])", r"{\1}", str(text))
     r = _run_ps("$w = New-Object -ComObject WScript.Shell;"
                 f"$w.SendKeys({_q(escaped)})", timeout=30)
     if r["exit_code"] == 0:
-        return _ok(message=f"Digitato: {text[:60]}")
+        return _ok(message=f"Scritto: {str(text)[:60]}")
     return _err(r["stderr"])
+
+
+# App di messaggistica: come aprirle e come cercare un contatto.
+_CHAT_APPS = {
+    "whatsapp": {"target": "whatsapp:", "search": "^f", "load": 4.0, "title": "whatsapp"},
+    "telegram": {"target": "tg://", "search": "^f", "load": 3.5, "title": "telegram"},
+    "slack": {"target": "slack:", "search": "^k", "load": 4.5, "title": "slack"},
+    "discord": {"target": "discord:", "search": "^k", "load": 4.5, "title": "discord"},
+}
+
+
+def send_message(app, contact, message, send=False, confirm=False):
+    """Apre una chat con un contatto e scrive il messaggio.
+
+    Di default NON invia: lascia il testo pronto perche il signore lo rilegga.
+    L'invio effettivo (send=true) richiede conferma esplicita.
+    """
+    app_key = (app or "whatsapp").strip().lower()
+    cfg = _CHAT_APPS.get(app_key)
+    if not cfg:
+        return _err(f"App non supportata. Usa: {', '.join(_CHAT_APPS)}")
+    if not contact:
+        return _err("Manca il nome del contatto.")
+    if not message:
+        return _err("Manca il testo del messaggio.")
+    if send and not confirm:
+        return {
+            "status": "needs_confirmation",
+            "message": (f"Sto per INVIARE questo messaggio a {contact} su {app_key}: "
+                        f"\"{message}\". Rileggilo al signore e chiedi conferma; "
+                        "solo dopo un si chiaro richiama con send=true e confirm=true."),
+            "contact": contact, "text": message,
+        }
+
+    # 1) Avvia l'app e ASPETTA che sia davvero in primo piano. Senza questa
+    #    verifica i tasti finirebbero nella finestra sbagliata (editor, browser...).
+    _run_ps(f"Start-Process {_q(cfg['target'])}", timeout=25)
+    time.sleep(cfg["load"])
+    ok, title = _focus_and_verify(cfg["title"])
+    if not ok:
+        return _err(
+            f"Non sono riuscito a portare {app_key} in primo piano (davanti c'e "
+            f"'{title}'). Non ho scritto nulla per non digitare nella finestra "
+            "sbagliata. Apri l'app e riprova.")
+
+    esc = str(message).replace("'", "''")
+    steps = [
+        "$w = New-Object -ComObject WScript.Shell",
+        "$vecchio = Get-Clipboard -Raw -ErrorAction SilentlyContinue",
+        # Apre la ricerca contatti e digita il nome
+        f"$w.SendKeys({_q(cfg['search'])})",
+        "Start-Sleep -Milliseconds 700",
+        f"Set-Clipboard -Value {_q(contact)}",
+        "Start-Sleep -Milliseconds 150",
+        "$w.SendKeys('^v')",
+        "Start-Sleep -Milliseconds 1500",
+        # Seleziona il primo risultato: il fuoco passa alla casella del messaggio
+        "$w.SendKeys('{ENTER}')",
+        "Start-Sleep -Milliseconds 1500",
+        # Scrive il messaggio
+        f"Set-Clipboard -Value '{esc}'",
+        "Start-Sleep -Milliseconds 150",
+        "$w.SendKeys('^v')",
+        "Start-Sleep -Milliseconds 400",
+    ]
+    if send:
+        steps += ["$w.SendKeys('{ENTER}')", "Start-Sleep -Milliseconds 300"]
+    steps.append("if ($vecchio) { Set-Clipboard -Value $vecchio }")
+
+    r = _run_ps(";".join(steps), timeout=60)
+    if r["exit_code"] != 0:
+        return _err(r["stderr"] or "Automazione non riuscita")
+    if send:
+        return _ok(message=f"Messaggio inviato a {contact} su {app_key}.")
+    return _ok(message=(f"Chat con {contact} aperta su {app_key} e messaggio scritto, "
+                        "pronto da inviare."),
+               note="Non inviato: il signore deve premere Invio, oppure richiamare "
+                    "send_message con send=true dopo conferma.")
 
 
 def press_keys(keys):
@@ -605,7 +767,7 @@ def _append_utf8(path, line):
 
 
 def add_todo(text):
-    """Aggiunge una voce alla to-do list di Raffaele."""
+    """Aggiunge una voce alla to-do list."""
     if not text:
         return _err("Testo mancante.")
     _append_utf8(os.path.join(ROOT, "todo.md"), f"- [ ] {text}")
@@ -643,7 +805,7 @@ def _load_memory():
 
 
 def remember(fact):
-    """Memorizza in modo permanente un fatto su Raffaele o sulle sue preferenze."""
+    """Memorizza in modo permanente un fatto sul signore o sulle sue preferenze."""
     if not fact:
         return _err("Fatto mancante.")
     facts = _load_memory()

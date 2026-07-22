@@ -139,15 +139,38 @@ risponde `429`, anche quando il function calling funziona benissimo. In quel cas
 
 ## La voce
 
-Jarvis parla con la voce del browser. Il menu a tendina in basso (**Voce…**) elenca
-tutte le voci installate: sceglila e la scelta viene ricordata. Sentirai subito
-un'anteprima.
+Jarvis usa le **voci neurali Microsoft generate dal server** (`edge-tts`): stessa
+qualità su qualunque browser, e due voci maschili italiane vere.
 
-Per una voce da maggiordomo la scelta migliore è **Microsoft Edge**, che include
-la voce italiana maschile e naturale *«Giuseppe»* (Jarvis la seleziona da solo se
-disponibile). Su Chrome le voci italiane sono più limitate e spesso femminili.
-Se vuoi la voce migliore, apri Jarvis con Edge — oppure, su Windows, installa altre
-voci da *Impostazioni → Data/ora e lingua → Voce → Aggiungi voci*.
+| Voce | Carattere |
+|---|---|
+| **Diego** (predefinita) | maschile, timbro pieno e autorevole — da maggiordomo |
+| **Giuseppe** | maschile, più morbido |
+| Elsa / Isabella | femminili |
+
+Le scegli dal menu **Voce…** in basso nella HUD: senti subito un'anteprima e la
+scelta viene ricordata. Puoi anche fissarla in `.env` con `JARVIS_VOICE`, e
+regolare la cadenza con `JARVIS_VOICE_RATE` / `JARVIS_VOICE_PITCH` (valori
+negativi = più lento e più grave).
+
+Se il server non riesce a sintetizzare (rete assente), la HUD ripiega
+automaticamente sulle voci del browser, che restano in fondo allo stesso menu.
+
+## Scrivere al posto tuo
+
+Jarvis può usare la tastiera:
+
+- **`send_message`** — apre WhatsApp, Telegram, Slack o Discord, cerca il
+  contatto e scrive il messaggio nella chat. *Di default non invia*: lascia il
+  testo pronto perché tu lo rilegga. L'invio vero richiede una tua conferma
+  esplicita a voce.
+- **`type_text`** — scrive in qualunque finestra.
+
+> ⚠️ La digitazione va nella finestra **in primo piano**. Per non scrivere per
+> sbaglio dentro un documento aperto, `send_message` verifica che l'app sia
+> davvero davanti prima di battere un solo tasto, e si ferma se non lo è;
+> `type_text` accetta il titolo della finestra attesa e rifiuta di scrivere se
+> non corrisponde.
 
 ## Limiti del piano gratuito di Gemini
 

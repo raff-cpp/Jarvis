@@ -12,7 +12,7 @@ import threading
 import time
 import webbrowser
 
-from flask import Flask, jsonify, send_from_directory
+from flask import Flask, Response, jsonify, request, send_from_directory
 from flask_sock import Sock
 
 # Carica la .env (GEMINI_API_KEY, JARVIS_MODEL, ...) prima di importare il brain.
@@ -22,6 +22,7 @@ try:
 except ImportError:
     pass
 
+import speech                    # noqa: E402
 import tools                     # noqa: E402
 from brain import Jarvis, redact  # noqa: E402
 
@@ -50,8 +51,42 @@ def index():
 
 @app.route("/api/info")
 def info():
-    # Espone solo un booleano e il nome del modello: MAI la chiave.
-    return jsonify({"has_key": jarvis.has_key, "model": jarvis.model})
+    # Espone solo booleani e il nome del modello: MAI la chiave.
+    return jsonify({"has_key": jarvis.has_key, "model": jarvis.model,
+                    "server_tts": speech.available})
+
+
+@app.route("/api/voices")
+def voices():
+    """Voci neurali disponibili lato server (qualita molto superiore al browser)."""
+    if not speech.available:
+        return jsonify({"voices": []})
+    etichette = {
+        "diego": "Diego — maschile, autorevole",
+        "giuseppe": "Giuseppe — maschile, morbido",
+        "elsa": "Elsa — femminile",
+        "isabella": "Isabella — femminile",
+    }
+    return jsonify({"default": speech.DEFAULT_VOICE,
+                    "voices": [{"id": k, "label": etichette.get(k, k)}
+                               for k in speech.VOICES]})
+
+
+@app.route("/api/tts", methods=["POST"])
+def tts():
+    """Sintetizza il testo con la voce neurale e restituisce un MP3."""
+    data = request.get_json(silent=True) or {}
+    text = (data.get("text") or "").strip()
+    if not text:
+        return jsonify({"error": "testo mancante"}), 400
+    try:
+        audio = speech.synthesize(text, data.get("voice"))
+    except Exception as e:
+        # La HUD ripiega da sola sulla voce del browser.
+        print("[jarvis] sintesi vocale non disponibile: " + redact(e), file=sys.stderr)
+        return jsonify({"error": "sintesi non disponibile"}), 503
+    return Response(audio, mimetype="audio/mpeg",
+                    headers={"Cache-Control": "no-store"})
 
 
 @app.route("/api/stats")
@@ -99,7 +134,7 @@ def ws(conn):
                 )
         except Exception as e:
             send({"type": "status", "state": "error"})
-            send({"type": "say", "text": "Si e verificato un errore interno, Raffaele."})
+            send({"type": "say", "text": "Si e verificato un errore interno, signore."})
             # redact(): la chiave non deve finire nemmeno nei log di console.
             print("[jarvis] errore nel turno: " + redact(e), file=sys.stderr)
         send({"type": "done"})

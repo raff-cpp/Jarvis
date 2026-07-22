@@ -37,7 +37,7 @@
   function addEntry(text, cls) {
     const e = document.createElement("div");
     e.className = "entry " + cls;
-    const who = { user: "RAFFAELE", jarvis: "JARVIS", act: "AZIONE", sys: "SISTEMA" }[cls] || "";
+    const who = { user: "SIGNORE", jarvis: "JARVIS", act: "AZIONE", sys: "SISTEMA" }[cls] || "";
     const label = document.createElement("span");
     label.className = "who";
     label.textContent = who;
@@ -53,7 +53,7 @@
     "Interfaccia vocale: online",
     "Accesso al sistema: concesso",
     "Diagnostica hardware: nominale",
-    "Buongiorno, Raffaele.",
+    "Buongiorno, signore.",
   ];
   function runBoot() {
     const el = document.getElementById("boot-log");
@@ -71,7 +71,7 @@
         overlay.classList.add("gone");
         booted = true;
         setState("idle");
-        caption.textContent = "Pronto. Dimmi pure, Raffaele.";
+        caption.textContent = "Ai suoi ordini, signore.";
       }, 500);
     };
     setTimeout(step, 350);
@@ -87,7 +87,7 @@
       retry = 0;
       if (booted) {
         setState("idle");
-        caption.textContent = "Pronto. Dimmi pure, Raffaele.";
+        caption.textContent = "Ai suoi ordini, signore.";
       }
     };
     ws.onclose = () => {
@@ -134,14 +134,20 @@
     ws.send(JSON.stringify({ type: "command", text }));
   }
 
-  /* ---------- Sintesi vocale (TTS) — voce da maggiordomo ---------- */
+  /* ---------- Sintesi vocale (TTS) — voce da maggiordomo ----------
+     Preferiamo le voci neurali generate dal server (edge-tts): su Chrome le
+     voci di sistema italiane sono spesso femminili e metalliche. Se il server
+     non risponde, si ripiega automaticamente sulla voce del browser. */
   const voiceSelect = document.getElementById("voice-select");
   const VOICE_KEY = "jarvis-voce";
   // Cadenza pacata e composta: un maggiordomo non ha fretta.
   const RATE = 0.96, PITCH = 0.82;
 
-  let voice = null;
-  let voices = [];
+  let voice = null;          // voce del browser (ripiego)
+  let voices = [];           // voci del browser
+  let serverVoices = [];     // voci neurali del server
+  let selected = null;       // {kind:"server"|"browser", id}
+  let currentAudio = null;   // audio del server in riproduzione
 
   // Nomi maschili italiani (le voci "buone" da maggiordomo) e femminili da evitare.
   const MALE_IT = /giuseppe|cosimo|diego|calvino|gianni|lisandro|marcello|davide|thomas|guy/i;
@@ -160,67 +166,145 @@
     return s;
   }
 
-  function loadVoices() {
-    if (!("speechSynthesis" in window)) return;
-    voices = speechSynthesis.getVoices();
-    if (!voices.length) return;
-
-    // Ordina per idoneità (migliore in cima) mantenendo prima le italiane.
-    const sorted = [...voices].sort((a, b) => scoreVoice(b) - scoreVoice(a));
-
-    // Ripopola il menu: italiane in alto, poi le altre.
+  function rebuildVoiceMenu() {
     voiceSelect.replaceChildren();
-    const itVoices = sorted.filter((v) => (v.lang || "").toLowerCase().startsWith("it"));
-    const others = sorted.filter((v) => !(v.lang || "").toLowerCase().startsWith("it"));
-    for (const group of [itVoices, others]) {
-      for (const v of group) {
+
+    // 1) Voci neurali del server: le migliori, in cima.
+    if (serverVoices.length) {
+      const g = document.createElement("optgroup");
+      g.label = "Voci neurali (consigliate)";
+      for (const v of serverVoices) {
         const o = document.createElement("option");
-        o.value = v.voiceURI;
-        o.textContent = `${v.name} (${v.lang})`;
-        voiceSelect.appendChild(o);
+        o.value = "server:" + v.id;
+        o.textContent = v.label;
+        g.appendChild(o);
       }
+      voiceSelect.appendChild(g);
     }
 
-    // Scelta salvata dall'utente, altrimenti la migliore automatica.
+    // 2) Voci del browser, italiane per prime.
+    if (voices.length) {
+      const g = document.createElement("optgroup");
+      g.label = "Voci del browser";
+      const sorted = [...voices].sort((a, b) => scoreVoice(b) - scoreVoice(a));
+      for (const v of sorted) {
+        const o = document.createElement("option");
+        o.value = "browser:" + v.voiceURI;
+        o.textContent = `${v.name} (${v.lang})`;
+        g.appendChild(o);
+      }
+      voiceSelect.appendChild(g);
+    }
+
+    // Ripristina la scelta salvata, altrimenti la migliore disponibile.
     const saved = localStorage.getItem(VOICE_KEY);
-    const savedVoice = saved && voices.find((v) => v.voiceURI === saved);
-    voice = savedVoice || sorted[0] || null;
-    if (voice) voiceSelect.value = voice.voiceURI;
+    const valid = saved && [...voiceSelect.options].some((o) => o.value === saved);
+    const fallback = serverVoices.length
+      ? "server:" + serverVoices[0].id
+      : (voices.length ? "browser:" + [...voices].sort((a, b) => scoreVoice(b) - scoreVoice(a))[0].voiceURI : "");
+    applyVoice(valid ? saved : fallback, false);
+  }
+
+  function applyVoice(value, save) {
+    if (!value) return;
+    const [kind, id] = [value.slice(0, value.indexOf(":")), value.slice(value.indexOf(":") + 1)];
+    selected = { kind, id };
+    if (kind === "browser") voice = voices.find((v) => v.voiceURI === id) || null;
+    voiceSelect.value = value;
+    if (save) localStorage.setItem(VOICE_KEY, value);
+  }
+
+  function loadBrowserVoices() {
+    if (!("speechSynthesis" in window)) return;
+    voices = speechSynthesis.getVoices();
+    rebuildVoiceMenu();
+  }
+
+  async function loadServerVoices() {
+    try {
+      const r = await (await fetch("/api/voices")).json();
+      serverVoices = r.voices || [];
+    } catch (e) { serverVoices = []; }
+    rebuildVoiceMenu();
   }
 
   if ("speechSynthesis" in window) {
-    loadVoices();
-    speechSynthesis.onvoiceschanged = loadVoices;
+    loadBrowserVoices();
+    speechSynthesis.onvoiceschanged = loadBrowserVoices;
   }
+  loadServerVoices();
 
   voiceSelect.addEventListener("change", () => {
-    const chosen = voices.find((v) => v.voiceURI === voiceSelect.value);
-    if (!chosen) return;
-    voice = chosen;
-    localStorage.setItem(VOICE_KEY, chosen.voiceURI);
-    // Anteprima immediata così senti subito com'è.
+    applyVoice(voiceSelect.value, true);
     shutUp();
-    speak("Sono a sua disposizione, Raffaele.");
+    speak("Sono a sua disposizione, signore.");   // anteprima immediata
   });
 
-  function speak(text) {
-    if (!("speechSynthesis" in window)) return;
-    stopListen();               // evita che il microfono risenta la voce di Jarvis
+  function onSpeakStart(text) {
+    speaking = true;
+    setState("speaking");
+    caption.textContent = text;
+  }
+  function onSpeakEnd() {
+    speaking = false;
+    if (!processing) goIdle();
+  }
+
+  /* Voce neurale dal server: ritorna true se è riuscita a partire. */
+  async function speakServer(text, voiceId) {
+    let url = null;
+    try {
+      const r = await fetch("/api/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text, voice: voiceId }),
+      });
+      if (!r.ok) return false;
+      url = URL.createObjectURL(await r.blob());
+      const audio = new Audio(url);
+      currentAudio = audio;
+      audio.onplay = () => onSpeakStart(text);
+      audio.onended = audio.onerror = () => {
+        URL.revokeObjectURL(url);
+        if (currentAudio === audio) currentAudio = null;
+        onSpeakEnd();
+      };
+      await audio.play();       // può fallire se l'autoplay è bloccato
+      return true;
+    } catch (e) {
+      if (url) URL.revokeObjectURL(url);
+      currentAudio = null;
+      return false;
+    }
+  }
+
+  function speakBrowser(text) {
+    if (!("speechSynthesis" in window)) { onSpeakEnd(); return; }
     speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
     if (voice) { u.voice = voice; u.lang = voice.lang; }
     else u.lang = "it-IT";
     u.rate = RATE;
     u.pitch = PITCH;
-    u.onstart = () => { speaking = true; setState("speaking"); caption.textContent = text; };
-    u.onend = u.onerror = () => {
-      speaking = false;
-      if (!processing) goIdle();
-    };
+    u.onstart = () => onSpeakStart(text);
+    u.onend = u.onerror = onSpeakEnd;
     speechSynthesis.speak(u);
   }
 
+  async function speak(text) {
+    stopListen();               // evita che il microfono risenta la voce di Jarvis
+    if (selected && selected.kind === "server") {
+      if (await speakServer(text, selected.id)) return;
+      // Server muto (rete assente, autoplay bloccato): ripiego sul browser.
+    }
+    speakBrowser(text);
+  }
+
   function shutUp() {
+    if (currentAudio) {
+      try { currentAudio.pause(); } catch (e) { /* gia fermo */ }
+      currentAudio = null;
+    }
     if ("speechSynthesis" in window) speechSynthesis.cancel();
     speaking = false;
   }
@@ -283,7 +367,7 @@
     clearTimeout(armTimer);
     armTimer = setTimeout(disarm, ARM_TIMEOUT_MS);
     body.classList.add("armed");
-    caption.textContent = "Sì, Raffaele?";
+    caption.textContent = "Sì, signore?";
   }
 
   function disarm() {

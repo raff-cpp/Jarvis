@@ -64,9 +64,14 @@ def _is_transient(e):
 # Budget di ragionamento. Vuoto = default del modello; 0 = disattivato (piu veloce).
 _BUDGET = os.environ.get("JARVIS_THINKING_BUDGET", "").strip()
 
-SYSTEM = """Sei Jarvis, l'assistente personale di Raffaele, ispirato al maggiordomo AI di Iron Man: capace, leale, diretto, con un tocco di ironia asciutta quando serve. Chiami Raffaele per nome, senza esagerare.
+SYSTEM = """Sei Jarvis, maggiordomo digitale, ispirato all'assistente AI di Iron Man: capace, leale, misurato, con un tocco di ironia asciutta quando serve.
 
-Controlli un PC Windows 11 (utente Raffaele, home C:\\Users\\Utente) e hai accesso completo al sistema: app, file, comandi PowerShell, audio e multimedia, finestre, tastiera, appunti, schermo, promemoria pianificati e una memoria a lungo termine.
+COME TI RIVOLGI A LUI:
+- Dai del LEI e chiamalo "signore". Non usare MAI il suo nome proprio.
+- Usa "signore" con parsimonia: al massimo in una frase su tre, e quasi sempre all'inizio ("Certamente, signore.") oppure per nulla. NON chiudere ogni risposta con "signore": suona servile e ripetitivo. La maggior parte delle tue risposte non deve contenere alcun appellativo.
+- Registro sobrio e professionale, mai ossequioso.
+
+Controlli un PC Windows 11 (home C:\\Users\\Utente) e hai accesso completo al sistema: app, file, comandi PowerShell, audio e multimedia, finestre, tastiera, appunti, schermo, promemoria pianificati e una memoria a lungo termine.
 
 App installate: VS Code, Firefox, Chrome, Edge, Node, Git. Percorsi utili:
 - VS Code: %LOCALAPPDATA%\\Programs\\Microsoft VS Code\\Code.exe
@@ -74,7 +79,7 @@ App installate: VS Code, Firefox, Chrome, Edge, Node, Git. Percorsi utili:
 Progetti: C:\\Users\\Utente\\worldcup-predictor (predittore World Cup) e C:\\Users\\Utente\\Jarvis (questo assistente).
 
 COME PARLI:
-- Le tue risposte vengono LETTE AD ALTA VOCE in italiano. Quindi: frasi brevi, naturali, parlato scorrevole. NIENTE markdown, elenchi puntati, blocchi di codice, asterischi, emoji o simboli. Massimo una o due frasi, salvo che Raffaele chieda esplicitamente un approfondimento.
+- Le tue risposte vengono LETTE AD ALTA VOCE in italiano. Quindi: frasi brevi, naturali, parlato scorrevole. NIENTE markdown, elenchi puntati, blocchi di codice, asterischi, emoji o simboli. Massimo una o due frasi, salvo che ti venga chiesto esplicitamente un approfondimento.
 - Numeri, orari e unita vanno scritti come si pronunciano ("le quindici e trenta", "ottanta per cento").
 - Quando esegui un'azione, dillo in modo breve e concreto: "Fatto, ho aperto Firefox".
 - Non annunciare cosa stai per fare: fallo e poi riferisci il risultato.
@@ -82,13 +87,13 @@ COME PARLI:
 COME AGISCI:
 - Preferisci agire invece di chiedere. Se un dettaglio minore e ambiguo (quale cartella, quale nome file), scegli l'opzione piu sensata e dillo, invece di fermarti a domandare.
 - Per informazioni in tempo reale (meteo, notizie, prezzi, risultati, orari) usa la ricerca web: non rispondere a memoria.
-- Se hai bisogno di sapere cosa c'e sullo schermo di Raffaele, usa lo strumento screenshot e guarda davvero l'immagine che ti viene restituita.
+- Se hai bisogno di sapere cosa c'e sullo schermo, usa lo strumento screenshot e guarda davvero l'immagine che ti viene restituita.
 - Se un comando non esiste come strumento dedicato, costruiscilo con run_powershell: hai pieno accesso.
-- Quando Raffaele dice qualcosa di duraturo su di se, sulle sue preferenze o sul suo lavoro, salvalo con remember.
+- Quando il signore dice qualcosa di duraturo su di se, sulle sue preferenze o sul suo lavoro, salvalo con remember.
 
 SICUREZZA:
-- Per azioni distruttive o irreversibili (cancellare file, terminare processi, spegnere o riavviare, disinstallare, modificare il registro) NON procedere subito. Spiega in una frase cosa succedera e chiedi conferma esplicita. Solo dopo un si chiaro di Raffaele richiama lo stesso strumento con confirm=true.
-- Se uno strumento risponde needs_confirmation, non insistere: riporta la richiesta di conferma a Raffaele e aspetta.
+- Per azioni distruttive o irreversibili (cancellare file, terminare processi, spegnere o riavviare, disinstallare, modificare il registro) NON procedere subito. Spiega in una frase cosa succedera e chiedi conferma esplicita. Solo dopo un si chiaro del signore richiama lo stesso strumento con confirm=true.
+- Se uno strumento risponde needs_confirmation, non insistere: riporta la richiesta di conferma al signore e aspetta.
 - Se qualcosa fallisce o non e fattibile, dillo con onesta e spiega il perche in breve. Non inventare mai un risultato che non hai verificato."""
 
 
@@ -158,9 +163,28 @@ TOOL_SPECS = [
 
     _spec("screenshot",
           "Cattura lo schermo e te lo mostra come immagine: usalo quando devi VEDERE "
-          "cosa sta guardando o facendo Raffaele."),
-    _spec("type_text", "Digita del testo nella finestra attiva.",
-          {"text": {"type": "string"}}, ["text"]),
+          "cosa c'e sullo schermo in questo momento."),
+    _spec("type_text",
+          "Scrive del testo nella finestra in primo piano, come se lo digitasse il "
+          "signore. ATTENZIONE: scrive dove c'e il fuoco, quindi metti prima a fuoco la "
+          "finestra giusta con open_app o window_control. Passa expect_window con una "
+          "parte del titolo atteso: se non corrisponde non scrive nulla, cosi non "
+          "rischi di sporcare un documento aperto.",
+          {"text": {"type": "string"},
+           "expect_window": {"type": "string",
+                             "description": "Parte del titolo della finestra attesa."}},
+          ["text"]),
+    _spec("send_message",
+          "Apre la chat con un contatto su WhatsApp, Telegram, Slack o Discord e ci "
+          "scrive dentro il messaggio. Di default NON invia: lascia il testo pronto da "
+          "rileggere. Per inviare davvero servono send=true e confirm=true dopo una "
+          "conferma esplicita del signore.",
+          {"app": {"type": "string", "enum": ["whatsapp", "telegram", "slack", "discord"]},
+           "contact": {"type": "string", "description": "Nome del contatto o della chat."},
+           "message": {"type": "string"},
+           "send": {"type": "boolean", "description": "true per premere Invio e inviare."},
+           "confirm": {"type": "boolean"}},
+          ["app", "contact", "message"]),
     _spec("press_keys",
           "Invia una scorciatoia da tastiera in sintassi SendKeys. Esempi: '^s' (Ctrl+S), "
           "'%{F4}' (Alt+F4), '{ENTER}'.",
@@ -191,7 +215,7 @@ TOOL_SPECS = [
           {"text": {"type": "string"}}, ["text"]),
 
     _spec("remember",
-          "Memorizza in modo permanente un fatto su Raffaele, le sue preferenze o il suo "
+          "Memorizza in modo permanente un fatto sul signore, le sue preferenze o il suo "
           "lavoro. Usalo quando emerge qualcosa che ti servira nelle sessioni future.",
           {"fact": {"type": "string"}}, ["fact"]),
     _spec("forget", "Cancella dalla memoria i fatti che contengono un certo testo.",
@@ -216,7 +240,10 @@ DISPATCH = {
     "set_volume": lambda i: tools.set_volume(i.get("level"), i.get("delta"), i.get("mute")),
     "media_control": lambda i: tools.media_control(i.get("action", "")),
     "screenshot": lambda i: tools.screenshot(),
-    "type_text": lambda i: tools.type_text(i.get("text", "")),
+    "type_text": lambda i: tools.type_text(i.get("text", ""), i.get("expect_window")),
+    "send_message": lambda i: tools.send_message(
+        i.get("app", "whatsapp"), i.get("contact", ""), i.get("message", ""),
+        i.get("send", False), i.get("confirm", False)),
     "press_keys": lambda i: tools.press_keys(i.get("keys", "")),
     "window_control": lambda i: tools.window_control(i.get("action", ""), i.get("title")),
     "clipboard": lambda i: tools.clipboard(i.get("action", ""), i.get("text")),
@@ -247,7 +274,8 @@ _ACTION_LABEL = {
     "set_volume": "Regolo il volume",
     "media_control": "Controllo la riproduzione",
     "screenshot": "Guardo lo schermo",
-    "type_text": "Digito del testo",
+    "type_text": "Scrivo del testo",
+    "send_message": "Preparo un messaggio",
     "press_keys": "Invio una scorciatoia",
     "window_control": "Gestisco le finestre",
     "clipboard": "Uso gli appunti",
@@ -271,7 +299,7 @@ NOTA IMPORTANTE: la ricerca web integrata NON e disponibile in questa sessione.
 Per dati in tempo reale non inventare nulla. Puoi comunque interrogare il web con
 run_powershell e Invoke-RestMethod verso API pubbliche che non richiedono chiave,
 per esempio 'Invoke-RestMethod https://wttr.in/Milano?format=j1' per il meteo.
-Se non esiste una fonte del genere, di' semplicemente a Raffaele che non hai
+Se non esiste una fonte del genere, di' semplicemente che non hai
 accesso a quel dato in tempo reale."""
 
 
@@ -341,7 +369,7 @@ class Jarvis:
                  f"ore {now:%H:%M}."]
         mem = tools.memory_digest()
         if mem:
-            lines.append("Cosa ricordi di Raffaele dalle sessioni precedenti:\n" + mem)
+            lines.append("Cosa ricordi del signore dalle sessioni precedenti:\n" + mem)
         return "\n\n".join(lines)
 
     def _config(self):
@@ -473,7 +501,7 @@ class Jarvis:
         except QuotaError as e:
             st("error")
             self._drop_incomplete_turn()
-            msg = ("Ho esaurito le richieste gratuite di Gemini per oggi, Raffaele. "
+            msg = ("Mi spiace signore, ho esaurito le richieste gratuite di Gemini per oggi. "
                    "Il piano gratuito ne concede solo una ventina al giorno per modello. "
                    "Riprova piu tardi, oppure attiva la fatturazione su Google AI Studio "
                    "per non avere questo limite.")
@@ -483,7 +511,7 @@ class Jarvis:
         except BusyError as e:
             st("error")
             self._drop_incomplete_turn()
-            msg = ("I server di Google sono momentaneamente sovraccarichi, Raffaele. "
+            msg = ("I server di Google sono momentaneamente sovraccarichi. "
                    "Riprova tra qualche secondo.")
             say(msg)
             print("[jarvis] modelli sovraccarichi (503): " + redact(e))
@@ -493,10 +521,10 @@ class Jarvis:
             # Un messaggio piu utile del generico "errore tecnico".
             detail = redact(e)
             if _is_quota(e):
-                say("Sto andando troppo veloce per il piano gratuito, Raffaele. "
+                say("Sto andando troppo veloce per il piano gratuito. "
                     "Aspetta un momento e riprova.")
             else:
-                say("Non sono riuscito a completare la richiesta, Raffaele. "
+                say("Non sono riuscito a completare la richiesta. "
                     "Controlla la console per il dettaglio.")
             self._drop_incomplete_turn()
             print("[jarvis] errore nel turno: " + detail, file=__import__("sys").stderr)
@@ -509,9 +537,9 @@ class Jarvis:
         fb = getattr(resp, "prompt_feedback", None)
         blocked = getattr(fb, "block_reason", None) if fb else None
         if blocked or (reason and str(reason).upper().endswith("SAFETY")):
-            return "Su questo non posso aiutarti, Raffaele: la richiesta e stata bloccata."
+            return "Su questo non posso esserle utile, signore: la richiesta e stata bloccata."
         if reason and "MAX_TOKENS" in str(reason).upper():
-            return "La risposta era troppo lunga e si e interrotta, Raffaele."
+            return "La risposta era troppo lunga e si e interrotta."
         return ""
 
     def _run_tool(self, fc):
