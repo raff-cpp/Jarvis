@@ -178,20 +178,33 @@ def _ws_loop(conn):
 
 
 def _handle_gesture(msg):
-    """Esegue un gesto. Ritorna un testo per la HUD, o None se silenzioso."""
+    """Esegue un gesto. Ritorna un testo per la HUD, o None se silenzioso.
+
+    Il risultato riportato e' quello VERO: prima questa funzione annunciava
+    "Finestra spostata" anche quando lo strumento non aveva fatto nulla.
+    """
     action = (msg.get("action") or "").strip().lower()
     value = msg.get("value")
     try:
         if action == "volume":
             tools.set_volume(level=int(value))
             return None                      # continuo: non intasare il registro
+
         if action == "media":
             verso = "next" if value == "next" else "previous"
-            tools.media_control(verso)
+            esito = tools.media_control(verso)
+            if esito.get("status") != "ok":
+                return "Comando musicale non riuscito"
             return "Traccia successiva" if verso == "next" else "Traccia precedente"
+
         if action == "window":
-            tools.window_to_monitor("right" if value == "right" else "left")
-            return "Finestra spostata"
+            # 'other' = l'altro schermo. Passiamo il valore cosi com'e: tradurlo
+            # in 'left' faceva fallire lo spostamento sul monitor piu a sinistra.
+            esito = tools.window_to_monitor(value if value in ("left", "right", "other") else "other")
+            if esito.get("status") != "ok":
+                return "Finestra non spostata: " + esito.get("message", "")
+            return esito.get("message", "Finestra spostata")
+
         if action == "mute":
             tools.set_volume(mute=True)
             return "Audio commutato"

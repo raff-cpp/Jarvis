@@ -199,6 +199,16 @@ public class JvAudio {
   public static bool Muted(){ bool m; V().GetMute(out m); return m; }
   public static void ToggleMute(){ Mute(!Muted()); }
 }
+public class JvKeys {
+  [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
+  // Iniezione a livello di SISTEMA, come una tastiera vera: i tasti
+  // multimediali arrivano al lettore anche se il fuoco e' altrove.
+  // SendKeys invece consegna solo alla finestra in primo piano.
+  public static void Tap(byte vk) {
+    keybd_event(vk, 0, 0, UIntPtr.Zero);
+    keybd_event(vk, 0, 2, UIntPtr.Zero);   // 2 = KEYEVENTF_KEYUP
+  }
+}
 public class JvWin {
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
@@ -635,19 +645,25 @@ def window_to_monitor(direction):
 
 
 def media_control(action):
-    """Controlla la riproduzione multimediale: play_pause, next, previous, stop."""
-    keys = {
-        "play_pause": "[char]179", "play": "[char]179", "pause": "[char]179",
-        "next": "[char]176", "previous": "[char]177", "prev": "[char]177",
-        "stop": "[char]178",
+    """Controlla la riproduzione multimediale: play_pause, next, previous, stop.
+
+    Usa l'iniezione di tastiera a livello di sistema, non SendKeys: quest'ultimo
+    consegna alla finestra in primo piano, quindi il comando finiva nell'editor
+    o nel browser invece che nel lettore musicale.
+    """
+    # Codici dei tasti multimediali di Windows.
+    tasti = {
+        "play_pause": 0xB3, "play": 0xB3, "pause": 0xB3,
+        "next": 0xB0, "successiva": 0xB0,
+        "previous": 0xB1, "prev": 0xB1, "precedente": 0xB1,
+        "stop": 0xB2,
     }
-    key = keys.get((action or "").strip().lower())
-    if not key:
-        return _err(f"Azione non valida. Usa: {', '.join(sorted(set(keys)))}")
-    r = _sendkeys(key)
-    if r["exit_code"] == 0:
+    vk = tasti.get((action or "").strip().lower())
+    if vk is None:
+        return _err(f"Azione non valida. Usa: {', '.join(sorted(set(tasti)))}")
+    if _worker.send(f"[JvKeys]::Tap({vk})"):
         return _ok(message=f"Comando multimediale inviato: {action}")
-    return _err(r["stderr"])
+    return _err("Controllo multimediale non disponibile.")
 
 
 # ---- Schermo, finestre, input ---------------------------------------------
