@@ -125,6 +125,8 @@
   let faceDetector = null;
   let onPresence = () => {};
   let stream = null;
+  let lettore = null;     // lettore dei fotogrammi della telecamera
+  let passiTotali = 0;    // fotogrammi elaborati: serve a misurare il ritmo vero
   let running = false;
   let video = null;
   let overlay = null;
@@ -509,13 +511,13 @@
   let erroriVolto = 0;    // fallimenti consecutivi del rilevatore
   let voltoVisibile = false;  // ultimo esito, mostrato sull'anteprima
 
-  function aggiornaPresenza(now) {
+  function aggiornaPresenza(now, fonte, manoInQuadro) {
     if (!faceDetector || now < prossimoControlloVolto) return;
-    /* Finche' la webcam non ha consegnato un fotogramma, detectForVideo lancia.
-       Senza questa riga i primi istanti dopo l'accensione contavano come
-       "errori del rilevatore" e, dopo cinque, la presenza si spegneva da sola
-       per sempre: la funzione moriva proprio mentre si accendeva. */
-    if (!video || video.readyState < 2) return;
+    /* Senza un fotogramma valido detectForVideo lancia, e quelle eccezioni
+       venivano contate come "guasto del rilevatore": dopo cinque la presenza
+       si spegneva da sola per sempre, cioe' moriva proprio mentre si
+       accendeva. */
+    if (!fonte) return;
     // Quanto tempo e' passato davvero dal controllo precedente: se il ciclo era
     // sospeso il salto e' enorme e la misura dell'assenza non vale piu' nulla.
     const atteso = prossimoControlloVolto;
@@ -527,9 +529,25 @@
       return;
     }
 
+    /* Una mano in quadro e' gia' la prova che sei li': non serve scomodare il
+       rilevatore di volti, che costa e ruberebbe tempo proprio al gesto in
+       corso. Vale anche quando guardi altrove mentre gesticoli. */
+    if (manoInQuadro) {
+      voltoUltimo = now;
+      if (!voltoDa) voltoDa = now;
+      uscito = false;
+      voltoVisibile = true;
+      if (preavvisato) { preavvisato = false; onPresence({ tipo: "annulla" }); }
+      if (!presente && now - voltoDa >= ARRIVO_CONFERMA_MS) {
+        presente = true;
+        onPresence({ tipo: "arrivo" });
+      }
+      return;
+    }
+
     let visto = false;
     try {
-      const r = faceDetector.detectForVideo(video, now);
+      const r = faceDetector.detectForVideo(fonte, now);
       visto = !!(r && r.detections && r.detections.length);
       erroriVolto = 0;
       voltoVisibile = visto;   // solo per il riscontro a schermo
@@ -583,23 +601,29 @@
     }
   }
 
-  /* ---------- ciclo principale ---------- */
-  function loop() {
-    if (!running) return;
+  /* ---------- ciclo principale ----------
+     Un fotogramma, un passo. La sorgente puo' essere un VideoFrame che arriva
+     dalla telecamera oppure l'elemento <video>: a MediaPipe vanno bene
+     entrambi, e al resto del codice non interessa la differenza. */
+  function passo(fonte) {
+    passiTotali++;
     const now = performance.now();
     let misure = null;
     let lm = null;
-    if (video.readyState >= 2) {
+    if (fonte) {
       try {
-        const res = landmarker.detectForVideo(video, now);
+        const res = landmarker.detectForVideo(fonte, now);
         if (res && res.landmarks && res.landmarks.length) {
           lm = res.landmarks[0];
           misure = classify(lm, now);
         }
       } catch (e) { /* fotogramma saltato: non è un problema */ }
+      /* Se una mano e' in quadro sei ovviamente alla scrivania: vale come
+         presenza, e in piu' evita di far girare il rilevatore di volti proprio
+         mentre stai gesticolando, cioe' quando ogni millisecondo serve alla
+         mano. */
+      try { aggiornaPresenza(now, fonte, !!lm); } catch (e) { /* mai fermare il ciclo */ }
     }
-    // Presenza: costa poco, gira a parte dal riconoscimento dei gesti.
-    try { aggiornaPresenza(now); } catch (e) { /* mai fermare il ciclo */ }
 
     // Disarmo automatico: se la mano sparisce, i comandi si spengono.
     if (armed && now - lastSeen > DISARM_MS) {
@@ -612,8 +636,40 @@
       track = [];
       onState({ armed: false });
     }
-    draw(lm, misure);
-    requestAnimationFrame(loop);
+    // A finestra coperta non c'e' niente da disegnare: e' lavoro buttato.
+    if (!document.hidden) draw(lm, misure);
+  }
+
+  /* Ciclo guidato dalla TELECAMERA, non dal disegno dello schermo.
+     requestAnimationFrame sembrava la scelta ovvia, ma misurato: con la
+     finestra coperta da un'altra applicazione Chrome lo ferma del tutto —
+     zero chiamate al secondo — e i gesti morivano appena mettevi Spotify
+     davanti alla HUD. La telecamera invece continua a consegnare fotogrammi
+     anche da coperta: prendendoli da lei il riconoscimento gira uguale sopra
+     e sotto (misurati 20/s in entrambi i casi, zero errori). */
+  async function cicloDaTelecamera(track_) {
+    lettore = new MediaStreamTrackProcessor({ track: track_ }).readable.getReader();
+    while (running) {
+      let frame = null;
+      try {
+        const r = await lettore.read();
+        if (r.done) break;
+        frame = r.value;
+      } catch (e) { break; }
+      try {
+        passo(frame);
+      } finally {
+        // Obbligatorio: un fotogramma non chiuso blocca la telecamera.
+        frame.close();
+      }
+    }
+  }
+
+  // Ripiego per browser senza MediaStreamTrackProcessor: com'era prima.
+  function cicloDaSchermo() {
+    if (!running) return;
+    passo(video.readyState >= 2 ? video : null);
+    requestAnimationFrame(cicloDaSchermo);
   }
 
   /* ---------- API pubblica ---------- */
@@ -658,12 +714,24 @@
     running = true;
     armed = false;
     lastSeen = performance.now();
-    requestAnimationFrame(loop);
+
+    const traccia = stream.getVideoTracks()[0];
+    let daTelecamera = false;
+    if (traccia && typeof window.MediaStreamTrackProcessor === "function") {
+      try { cicloDaTelecamera(traccia); daTelecamera = true; } catch (e) { daTelecamera = false; }
+    }
+    if (!daTelecamera) requestAnimationFrame(cicloDaSchermo);
+    return { sottoCoperta: daTelecamera };
   }
 
   function stop() {
     running = false;
     armed = false;
+    if (lettore) {
+      // Sveglia il ciclo fermo su read(), altrimenti resterebbe appeso.
+      try { lettore.cancel(); } catch (e) { /* gia' chiuso */ }
+      lettore = null;
+    }
     presente = false; uscito = false; voltoDa = 0; voltoUltimo = 0;
     preavvisato = false; erroriVolto = 0; prossimoControlloVolto = 0;
     voltoVisibile = false;
@@ -689,5 +757,17 @@
     return showNumbers;
   }
 
-  window.JarvisGestures = { start, stop, toggleNumbers, isRunning: () => running };
+  /* Ritmo reale del riconoscimento. Serve a rispondere con un numero, invece
+     che a intuito, alla domanda "i gesti stanno ancora girando?" — soprattutto
+     con la finestra coperta, dove non si vede nulla per definizione. */
+  function stato() {
+    return {
+      running,
+      passi: passiTotali,
+      daTelecamera: !!lettore,
+      presenza: faceDetector ? (voltoVisibile ? "volto" : "assente") : "non disponibile",
+    };
+  }
+
+  window.JarvisGestures = { start, stop, toggleNumbers, stato, isRunning: () => running };
 })();
