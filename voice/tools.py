@@ -928,14 +928,28 @@ def schedule_reminder(text, when):
 
     name = f"Jarvis_{uuid.uuid4().hex[:8]}"
     msg = str(text).replace("'", "''").replace('"', "'")
+    porta = os.environ.get("JARVIS_PORT", "8730")
+    # All'orario stabilito si prova prima a farlo dire a Jarvis con la sua voce.
+    # Se la finestra e' chiusa (nessuno collegato) si ripiega sulla notifica di
+    # Windows con la voce di sistema, cosi' il promemoria non va mai perso.
     inner = (
-        "Add-Type -AssemblyName System.Windows.Forms,System.Drawing; "
-        "$n=New-Object System.Windows.Forms.NotifyIcon; "
-        "$n.Icon=[System.Drawing.SystemIcons]::Information; "
-        "$n.BalloonTipTitle='Promemoria di Jarvis'; "
-        f"$n.BalloonTipText='{msg}'; "
-        "$n.Visible=$true; $n.ShowBalloonTip(15000); Start-Sleep -Seconds 16; $n.Dispose(); "
-        f"(New-Object -ComObject SAPI.SpVoice).Speak('{msg}')"
+        "$detto=$false; "
+        "try { "
+        f"  $r = Invoke-RestMethod -Uri 'http://127.0.0.1:{porta}/api/announce' "
+        "     -Method Post -ContentType 'application/json' -TimeoutSec 4 "
+        f"     -Body (@{{text='Promemoria: {msg}'}} | ConvertTo-Json); "
+        "  $detto = [bool]$r.delivered "
+        "} catch { $detto = $false } "
+        "if (-not $detto) { "
+        "  Add-Type -AssemblyName System.Windows.Forms,System.Drawing; "
+        "  $n=New-Object System.Windows.Forms.NotifyIcon; "
+        "  $n.Icon=[System.Drawing.SystemIcons]::Information; "
+        "  $n.BalloonTipTitle='Promemoria di Jarvis'; "
+        f"  $n.BalloonTipText='{msg}'; "
+        "  $n.Visible=$true; $n.ShowBalloonTip(15000); "
+        f"  (New-Object -ComObject SAPI.SpVoice).Speak('{msg}'); "
+        "  Start-Sleep -Seconds 16; $n.Dispose() "
+        "}"
     )
     arg = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command \"" + inner + "\""
     ps = (

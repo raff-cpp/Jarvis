@@ -124,6 +124,8 @@
         arm();
         startListen();
         caption.textContent = "Sì, signore?";
+      } else if (m.type === "announce") {
+        accodaAnnuncio(m.text);
       } else if (m.type === "gesture_ack") {
         addEntry(m.text, "act");           // solo i gesti discreti, non il volume
       } else if (m.type === "done") {
@@ -135,7 +137,31 @@
 
   function goIdle() {
     setState("idle");
+    svuotaAnnunci();          // ora che è libero, può dire ciò che aveva in serbo
     if (continuousBox.checked) startListen();
+  }
+
+  /* ---------- Annunci di iniziativa ----------
+     Jarvis può parlare per primo (download completato, batteria scarica,
+     briefing). Non deve però interrompere una risposta in corso né accavallarsi
+     a una domanda: se è occupato l'annuncio aspetta il momento buono. */
+  const annunci = [];
+
+  function accodaAnnuncio(testo) {
+    if (!testo) return;
+    annunci.push(testo);
+    svuotaAnnunci();
+  }
+
+  function svuotaAnnunci() {
+    /* Si guarda solo se sta elaborando o parlando. NON si guarda "listening":
+       in ascolto continuo il microfono è quasi sempre acceso, e gli annunci
+       non uscirebbero mai. Che il microfono risenta la propria voce è già
+       coperto dal filtro anti-eco. */
+    if (!annunci.length || processing || speaking) return;
+    const testo = annunci.shift();
+    addEntry(testo, "jarvis");
+    speak(testo);
   }
 
   function sendCommand(text) {

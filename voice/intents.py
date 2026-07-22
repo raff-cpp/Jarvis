@@ -134,6 +134,12 @@ def _finestra_sinistra(_m):
     return "Fatto.", "Sposto la finestra"
 
 
+def _briefing(_m):
+    import briefing
+    import os
+    return briefing.componi(os.environ.get("JARVIS_CITTA", "")), "Preparo il riepilogo"
+
+
 def _meteo(m):
     citta = _normalizza(m.groupdict().get("citta") or "")
     citta = re.sub(r"^(a|ad|in|nel|nella|di)\s+", "", citta).strip()
@@ -169,6 +175,10 @@ _REGOLE = [
     (r"^sposta (la finestra |questa finestra )?(a |verso )?destra$", _finestra_destra),
     (r"^sposta (la finestra |questa finestra )?(a |verso )?sinistra$", _finestra_sinistra),
     (r"^(finestra|schermo) (a |verso )?(destra|altro schermo)$", _finestra_destra),
+
+    (r"^(buongiorno|buonasera|buon pomeriggio)( jarvis)?$", _briefing),
+    (r"^(briefing|riepilogo|situazione|fammi il punto)( della giornata)?$", _briefing),
+    (r"^come (va|siamo messi) (oggi|la giornata)$", _briefing),
 
     (r"^(che tempo fa|com'e il tempo|meteo)(?P<citta> .+)?$", _meteo),
     (r"^(che tempo fa|meteo)\s*(?P<citta>a .+)$", _meteo),

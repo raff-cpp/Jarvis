@@ -22,8 +22,10 @@ try:
 except ImportError:
     pass
 
+import briefing                  # noqa: E402
 import speech                    # noqa: E402
 import tools                     # noqa: E402
+import watcher                   # noqa: E402
 from brain import Jarvis, redact  # noqa: E402
 
 WEB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
@@ -44,17 +46,29 @@ _clients_lock = threading.Lock()
 
 
 def _broadcast(obj):
-    """Manda un messaggio a tutte le HUD collegate."""
+    """Manda un messaggio a tutte le HUD collegate.
+
+    Ritorna a quante e' arrivato: serve a capire se un annuncio e' stato
+    davvero consegnato o se non c'era nessuna finestra aperta ad ascoltarlo.
+    """
     data = json.dumps(obj)
+    consegnati = 0
     with _clients_lock:
         morte = []
         for c in _clients:
             try:
                 c.send(data)
+                consegnati += 1
             except Exception:
                 morte.append(c)
         for c in morte:
             _clients.discard(c)
+    return consegnati
+
+
+def _annuncia(testo):
+    """Fa parlare Jarvis di sua iniziativa. Ritorna True se qualcuno ha sentito."""
+    return _broadcast({"type": "announce", "text": testo}) > 0
 
 
 @app.after_request
@@ -106,6 +120,23 @@ def tts():
         return jsonify({"error": "sintesi non disponibile"}), 503
     return Response(audio, mimetype="audio/mpeg",
                     headers={"Cache-Control": "no-store"})
+
+
+@app.route("/api/announce", methods=["POST"])
+def announce():
+    """Fa pronunciare un avviso a Jarvis.
+
+    Usato dai promemoria pianificati: cosi' li annuncia con la sua voce invece
+    del riquadro anonimo di Windows. Se nessuna finestra e' aperta risponde
+    delivered=false e il promemoria ripiega sulla notifica di sistema.
+
+    Raggiungibile solo da questo PC: il server ascolta unicamente su 127.0.0.1.
+    """
+    data = request.get_json(silent=True) or {}
+    testo = (data.get("text") or "").strip()
+    if not testo:
+        return jsonify({"error": "testo mancante"}), 400
+    return jsonify({"delivered": _annuncia(testo[:400])})
 
 
 @app.route("/api/stats")
@@ -276,6 +307,38 @@ def _hotkey_loop():
             _on_hotkey()
 
 
+# ---- Iniziativa di Jarvis --------------------------------------------------
+
+PROATTIVO = os.environ.get("JARVIS_PROATTIVO", "on").strip().lower() != "off"
+BRIEFING_AUTO = os.environ.get("JARVIS_BRIEFING_AUTO", "on").strip().lower() != "off"
+CITTA = os.environ.get("JARVIS_CITTA", "").strip()
+
+_watcher = watcher.Watcher(_annuncia)
+
+
+def _briefing_di_avvio():
+    """Al primo avvio della giornata, Jarvis fa il punto della situazione.
+
+    Aspetta che una finestra sia collegata: annunciarlo nel vuoto lo
+    sprecherebbe. Se dopo un minuto non si collega nessuno, rinuncia.
+    """
+    if briefing.gia_fatto_oggi():
+        return
+    for _ in range(60):
+        time.sleep(1)
+        with _clients_lock:
+            if not _clients:
+                continue
+        try:
+            testo = briefing.componi(CITTA)
+        except Exception as e:
+            print("[jarvis] briefing non riuscito: " + redact(e), file=sys.stderr)
+            return
+        if _annuncia(testo):
+            briefing.segna_fatto()
+        return
+
+
 def _port_in_use():
     """True se qualcosa ascolta gia sulla porta di Jarvis."""
     import socket
@@ -325,6 +388,10 @@ def main():
     # istantanei anche la prima volta. In un thread, non blocca l'avvio.
     threading.Thread(target=speech.prewarm, daemon=True).start()
     threading.Thread(target=_hotkey_loop, daemon=True).start()
+    if PROATTIVO:
+        _watcher.start()
+    if BRIEFING_AUTO:
+        threading.Thread(target=_briefing_di_avvio, daemon=True).start()
     time.sleep(1.2)
     url = f"http://127.0.0.1:{PORT}/"
     try:
@@ -340,6 +407,8 @@ def main():
         print("  Cervello: MODALITA LOCALE (nessuna API key)")
         print("  -> copia voice\\.env.example in voice\\.env e inserisci GEMINI_API_KEY")
         print("  -> la chiave si crea su https://aistudio.google.com/apikey")
+    if PROATTIVO:
+        print("  Iniziativa: attiva (download completati, batteria scarica)")
     print("  Chiudi questa finestra per fermare Jarvis.")
     print("=" * 60)
     try:

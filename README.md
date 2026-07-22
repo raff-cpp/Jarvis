@@ -208,6 +208,41 @@ ferma e dopo un decimo di secondo, perché è l'unico gesto con effetto continuo
 > serve, anche perché occupa la camera e le videochiamate non la troverebbero
 > libera.
 
+## Jarvis parla per primo
+
+Non aspetta sempre di essere interrogato. Sorveglia alcune cose e ti avvisa a
+voce:
+
+- **download completato** — controlla la cartella Download e ignora i file
+  ancora in corso (`.crdownload`, `.part`…), così non annuncia scaricamenti a metà
+- **batteria sotto il 15%** — una volta sola; si riarma solo se risale sopra il 25%
+- **promemoria pronunciati da lui**, con la sua voce, invece del riquadro
+  anonimo di Windows. Se la finestra è chiusa ripiega sulla notifica di sistema,
+  così il promemoria non va mai perso
+
+Gli annunci **non interrompono mai**: se Jarvis sta rispondendo o sta elaborando
+una richiesta, l'avviso aspetta il momento buono e poi esce, in ordine.
+
+Le condizioni sono regole locali e le frasi sono fisse: **nessun consumo di quota**.
+Si disattiva con `JARVIS_PROATTIVO=off`.
+
+## Il riepilogo della giornata
+
+Di' **«buongiorno»** (o *briefing*, *riepilogo*, *fammi il punto*) e Jarvis mette
+insieme meteo, promemoria di oggi, cose da fare in sospeso e spazio su disco.
+
+> *«Buonasera, signore. Oggi è mercoledì 22 luglio, sono le 19 e 51. A Cesa ci
+> sono 32 gradi… Ha 2 cose da fare in sospeso. Sul disco ci sono 38 gigabyte
+> liberi.»*
+
+Arriva **da solo al primo avvio di ogni giornata**, non appena la HUD è pronta.
+Non passa dal modello: costa **zero richieste** e risponde in un paio di secondi.
+Ogni pezzo è facoltativo — se il meteo non risponde, il resto del riepilogo
+arriva lo stesso.
+
+Disattivabile con `JARVIS_BRIEFING_AUTO=off`; la città per il meteo si fissa con
+`JARVIS_CITTA`.
+
 ## Comandi istantanei
 
 I comandi semplici non passano dall'AI: vengono riconosciuti ed eseguiti in locale,
