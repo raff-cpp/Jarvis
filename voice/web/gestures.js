@@ -26,8 +26,17 @@
      fuori inquadratura sarebbe molto più fastidioso di un blocco mancato. */
   const VOLTO_OGNI_MS = 500;      // il volto non serve a 30 fps: basta ogni mezzo secondo
   const ARRIVO_CONFERMA_MS = 1500; // quanto devi restare inquadrato per contare come "arrivato"
-  const USCITA_PREAVVISO_MS = 75000;  // dopo quanto avvisa che sta per bloccare
-  const USCITA_MS = 90000;            // dopo quanto considera che te ne sei andato
+  const USCITA_PREAVVISO_MS = 3540000;  // 59 minuti: avvisa che sta per bloccare
+  const USCITA_MS = 3600000;            // un'ora: solo ora considera che te ne sei andato
+
+  /* Un'ora di attesa non e' un'ora di ciclo garantito: se la finestra viene
+     ridotta a icona, coperta o il PC va in sospensione, il browser SOSPENDE
+     l'animazione e con essa questo controllo. Al risveglio ci si ritroverebbe
+     con un'assenza apparente di ore e il PC verrebbe bloccato nell'istante
+     esatto in cui ti risiedi. Quando fra due controlli passa molto piu' del
+     dovuto, il conteggio riparte da zero: di quel buco non sappiamo nulla e
+     l'unica ipotesi onesta e' non agire. */
+  const SALTO_MS = 5000;
 
   /* --- Soglie --- */
   const ARM_HOLD_MS = 600;      // quanto tenere il palmo aperto per armare
@@ -456,7 +465,16 @@
 
   function aggiornaPresenza(now) {
     if (!faceDetector || now < prossimoControlloVolto) return;
+    // Quanto tempo e' passato davvero dal controllo precedente: se il ciclo era
+    // sospeso il salto e' enorme e la misura dell'assenza non vale piu' nulla.
+    const atteso = prossimoControlloVolto;
     prossimoControlloVolto = now + VOLTO_OGNI_MS;
+    if (voltoUltimo && now - atteso > SALTO_MS) {
+      voltoUltimo = now;      // riparte il conteggio: serve un'ora osservata davvero
+      voltoDa = 0;
+      if (preavvisato) { preavvisato = false; onPresence({ tipo: "annulla" }); }
+      return;
+    }
 
     let visto = false;
     try {

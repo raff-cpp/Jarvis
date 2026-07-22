@@ -216,8 +216,8 @@ serve attivare nulla in più: basta che **GESTI** sia acceso.
 | Cosa succede | Cosa fa Jarvis |
 |---|---|
 | Ti siedi (volto inquadrato per 1,5 s) | «Bentornato, signore» — e la prima volta della giornata ti fa il riepilogo senza che tu chieda nulla |
-| Sparisci per 75 s | ti avvisa a voce che sta per bloccare |
-| Sparisci per 90 s | mette in pausa la musica e **blocca il PC** |
+| Sparisci per 59 minuti | ti avvisa a voce che sta per bloccare |
+| Sparisci per **un'ora** | mette in pausa la musica e **blocca il PC** |
 | Rientri prima del blocco | annulla tutto in silenzio |
 
 **Cosa esce dal browser:** la parola `arrivo` o `uscita`, nient'altro. Nessuna
@@ -225,12 +225,21 @@ immagine, nessun volto, nessun dato biometrico lascia mai la pagina — il
 riconoscimento gira in locale come quello delle mani, e il server riceve solo
 l'esito.
 
-Il blocco automatico è l'azione più invasiva del progetto, quindi ha **tre
-protezioni**: un minuto e mezzo di assenza continuata, un preavviso parlato che
-ti lascia il tempo di rientrare, e il fatto che non scatta mai se hai dato un
-comando a Jarvis nell'ultimo minuto (stai chiaramente lavorando, ti sei solo
-sporto fuori inquadratura). La musica viene fermata **prima** del blocco: dopo,
-la sessione resta attiva e la traccia continuerebbe a suonare a schermo spento.
+Il blocco automatico è l'azione più invasiva del progetto, quindi ha **quattro
+protezioni**: un'ora piena di assenza continuata, un preavviso parlato che ti
+lascia un minuto per rientrare, il fatto che non scatta mai se hai dato un
+comando a Jarvis di recente, e la difesa dai *salti temporali* qui sotto. La
+musica viene fermata **prima** del blocco: dopo, la sessione resta attiva e la
+traccia continuerebbe a suonare a schermo spento.
+
+**Un'ora di attesa non è un'ora di osservazione.** Se riduci a icona la HUD, la
+copri con un'altra finestra o il PC va in sospensione, il browser mette in pausa
+il ciclo video e con esso questo controllo. Senza precauzioni, al risveglio
+Jarvis vedrebbe un'assenza apparente di ore e bloccherebbe lo schermo
+nell'istante esatto in cui ti risiedi. Quando fra due controlli passa molto più
+del dovuto il conteggio **riparte da zero**: di quel buco non si sa nulla, e
+l'unica ipotesi onesta è non agire. Serve quindi un'ora *davvero vista* dalla
+webcam.
 
 Se vuoi solo il saluto, metti `JARVIS_PRESENZA_BLOCCO=off` nel `.env`; per
 disattivare tutto, `JARVIS_PRESENZA=off`.
