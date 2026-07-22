@@ -124,6 +124,16 @@ def _minimizza(_m):
     return "Fatto.", "Gestisco le finestre"
 
 
+def _finestra_destra(_m):
+    tools.window_to_monitor("right")
+    return "Fatto.", "Sposto la finestra"
+
+
+def _finestra_sinistra(_m):
+    tools.window_to_monitor("left")
+    return "Fatto.", "Sposto la finestra"
+
+
 def _meteo(m):
     citta = _normalizza(m.groupdict().get("citta") or "")
     citta = re.sub(r"^(a|ad|in|nel|nella|di)\s+", "", citta).strip()
@@ -156,6 +166,9 @@ _REGOLE = [
     (r"^(come sta il (pc|computer)|stato del (sistema|pc)|come va il (pc|computer))$", _stato_pc),
     (r"^(blocca|blocco) (il )?(pc|computer|schermo)$", _blocca),
     (r"^(minimizza|riduci) tutt[oe]( le finestre)?$", _minimizza),
+    (r"^sposta (la finestra |questa finestra )?(a |verso )?destra$", _finestra_destra),
+    (r"^sposta (la finestra |questa finestra )?(a |verso )?sinistra$", _finestra_sinistra),
+    (r"^(finestra|schermo) (a |verso )?(destra|altro schermo)$", _finestra_destra),
 
     (r"^(che tempo fa|com'e il tempo|meteo)(?P<citta> .+)?$", _meteo),
     (r"^(che tempo fa|meteo)\s*(?P<citta>a .+)$", _meteo),

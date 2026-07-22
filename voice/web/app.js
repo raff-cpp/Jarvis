@@ -108,6 +108,8 @@
       } else if (m.type === "say") {
         addEntry(m.text, "jarvis");
         speak(m.text);
+      } else if (m.type === "gesture_ack") {
+        addEntry(m.text, "act");           // solo i gesti discreti, non il volume
       } else if (m.type === "done") {
         processing = false;
         if (!speaking) goIdle();
@@ -552,6 +554,77 @@
     ctx.restore();
   }
   drawViz();
+
+  /* ---------- Controllo a gesti (webcam) ---------- */
+  const gestBox = document.getElementById("gestures");
+  const camWrap = document.getElementById("cam-wrap");
+  const camState = document.getElementById("cam-state");
+  const GEST_KEY = "jarvis-gesti";
+  let gestHintTimer = null;
+
+  function sendGesture(ev) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: "gesture", action: ev.action, value: ev.value }));
+  }
+
+  function gestureState(s) {
+    body.classList.toggle("gest-armed", !!s.armed);
+    if (s.hint) {
+      camState.textContent = s.hint;
+      clearTimeout(gestHintTimer);
+      gestHintTimer = setTimeout(() => {
+        camState.textContent = s.armed ? "attivo" : "palmo aperto per attivare";
+      }, 1400);
+      return;
+    }
+    clearTimeout(gestHintTimer);
+    camState.textContent = s.armed ? "attivo" : "palmo aperto per attivare";
+  }
+
+  async function startGestures() {
+    camWrap.hidden = false;
+    camState.textContent = "carico il modello…";
+    try {
+      await window.JarvisGestures.start({
+        video: document.getElementById("cam"),
+        overlay: document.getElementById("cam-overlay"),
+        onEvent: sendGesture,
+        onState: gestureState,
+      });
+      camState.textContent = "palmo aperto per attivare";
+      localStorage.setItem(GEST_KEY, "1");
+      addEntry("Controllo a gesti attivo. Palmo aperto per armare.", "sys");
+    } catch (e) {
+      // Webcam negata, offline, oppure modello non scaricabile.
+      gestBox.checked = false;
+      camWrap.hidden = true;
+      localStorage.removeItem(GEST_KEY);
+      addEntry("Gesti non disponibili: " + (e && e.message ? e.message : e), "sys");
+    }
+  }
+
+  function stopGestures() {
+    window.JarvisGestures.stop();
+    camWrap.hidden = true;
+    body.classList.remove("gest-armed");
+    localStorage.removeItem(GEST_KEY);
+  }
+
+  gestBox.addEventListener("change", () => {
+    if (gestBox.checked) startGestures();
+    else stopGestures();
+  });
+
+  // Ripristina la scelta, ma solo dopo un gesto dell'utente: il browser non
+  // concede la webcam senza interazione.
+  if (localStorage.getItem(GEST_KEY) === "1") {
+    const riprendi = () => {
+      document.removeEventListener("click", riprendi);
+      gestBox.checked = true;
+      startGestures();
+    };
+    document.addEventListener("click", riprendi, { once: true });
+  }
 
   /* ---------- Orologio ---------- */
   const days = ["DOMENICA", "LUNEDÌ", "MARTEDÌ", "MERCOLEDÌ", "GIOVEDÌ", "VENERDÌ", "SABATO"];

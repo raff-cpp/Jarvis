@@ -141,6 +141,32 @@ Funzionano subito, senza configurazione. Se `JARVIS_WEB_SEARCH=auto` e il ground
 Google fosse disponibile, Jarvis lo userebbe in aggiunta; con `off` (consigliato)
 evita la chiamata sprecata.
 
+## Controllo a gesti (webcam)
+
+Attiva **GESTI** nel pannello di sinistra: compare l'anteprima della webcam con
+lo scheletro della mano. Il riconoscimento gira **nel browser** (MediaPipe), non
+sul server.
+
+Niente scatta finché non **armi** il sistema: tieni il **palmo aperto** verso la
+webcam per mezzo secondo. La cornice si illumina. Dopo 4 secondi senza mano si
+disarma da solo.
+
+| Gesto | Effetto |
+|---|---|
+| **Pinch** pollice-indice (altre dita chiuse) | volume, come una manopola |
+| **Mano aperta**, swipe ← / → | traccia precedente / successiva |
+| **Pugno chiuso**, swipe ← / → | sposta la finestra sull'altro schermo |
+
+Le stesse azioni restano disponibili a voce (*«sposta la finestra a destra»*).
+
+Perché è tarato "stretto": le mani si muovono in continuazione mentre si parla,
+quindi l'armamento esplicito e le soglie ampie evitano che un gesto casuale salti
+una traccia. Se un gesto non scatta, rifallo più ampio.
+
+> La webcam resta accesa finché l'interruttore è attivo: spegnilo quando non
+> serve, anche perché occupa la camera e le videochiamate non la troverebbero
+> libera.
+
 ## Comandi istantanei
 
 I comandi semplici non passano dall'AI: vengono riconosciuti ed eseguiti in locale,

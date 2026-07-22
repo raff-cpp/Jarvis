@@ -112,17 +112,25 @@ def ws(conn):
         except (ValueError, TypeError):
             continue
 
-        if msg.get("type") != "command":
-            continue
-        text = (msg.get("text") or "").strip()
-        if not text:
-            continue
-
         def send(obj):
             try:
                 conn.send(json.dumps(obj))
             except Exception:
                 pass
+
+        # I gesti non passano dal modello: sono azioni dirette e devono essere
+        # immediate (il pinch aggiorna il volume molte volte al secondo).
+        if msg.get("type") == "gesture":
+            esito = _handle_gesture(msg)
+            if esito:
+                send({"type": "gesture_ack", "text": esito})
+            continue
+
+        if msg.get("type") != "command":
+            continue
+        text = (msg.get("text") or "").strip()
+        if not text:
+            continue
 
         try:
             with _brain_lock:
@@ -138,6 +146,30 @@ def ws(conn):
             # redact(): la chiave non deve finire nemmeno nei log di console.
             print("[jarvis] errore nel turno: " + redact(e), file=sys.stderr)
         send({"type": "done"})
+
+
+def _handle_gesture(msg):
+    """Esegue un gesto. Ritorna un testo per la HUD, o None se silenzioso."""
+    action = (msg.get("action") or "").strip().lower()
+    value = msg.get("value")
+    try:
+        if action == "volume":
+            tools.set_volume(level=int(value))
+            return None                      # continuo: non intasare il registro
+        if action == "media":
+            verso = "next" if value == "next" else "previous"
+            tools.media_control(verso)
+            return "Traccia successiva" if verso == "next" else "Traccia precedente"
+        if action == "window":
+            tools.window_to_monitor("right" if value == "right" else "left")
+            return "Finestra spostata"
+        if action == "mute":
+            tools.set_volume(mute=True)
+            return "Audio commutato"
+    except Exception as e:
+        print("[jarvis] gesto non riuscito: " + redact(e), file=sys.stderr)
+        return "Gesto non riuscito"
+    return None
 
 
 def _port_in_use():

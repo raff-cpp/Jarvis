@@ -212,6 +212,10 @@ TOOL_SPECS = [
           "Invia una scorciatoia da tastiera in sintassi SendKeys. Esempi: '^s' (Ctrl+S), "
           "'%{F4}' (Alt+F4), '{ENTER}'.",
           {"keys": {"type": "string"}}, ["keys"]),
+    _spec("window_to_monitor",
+          "Sposta la finestra attiva sullo schermo a sinistra o a destra "
+          "(utile con piu monitor). Conserva dimensione e stato massimizzato.",
+          {"direction": {"type": "string", "enum": ["left", "right"]}}, ["direction"]),
     _spec("window_control", "Gestisce le finestre aperte.",
           {"action": {"type": "string", "enum": ["focus", "minimize_all", "restore_all", "list"]},
            "title": {"type": "string", "description": "Titolo parziale, richiesto per focus."}},
@@ -272,6 +276,7 @@ DISPATCH = {
         i.get("send", False), i.get("confirm", False)),
     "press_keys": lambda i: tools.press_keys(i.get("keys", "")),
     "window_control": lambda i: tools.window_control(i.get("action", ""), i.get("title")),
+    "window_to_monitor": lambda i: tools.window_to_monitor(i.get("direction", "")),
     "clipboard": lambda i: tools.clipboard(i.get("action", ""), i.get("text")),
     "notify": lambda i: tools.notify(i.get("title"), i.get("message", "")),
     "schedule_reminder": lambda i: tools.schedule_reminder(i.get("text", ""), i.get("when", "")),
@@ -307,6 +312,7 @@ _ACTION_LABEL = {
     "send_message": "Preparo un messaggio",
     "press_keys": "Invio una scorciatoia",
     "window_control": "Gestisco le finestre",
+    "window_to_monitor": "Sposto la finestra",
     "clipboard": "Uso gli appunti",
     "notify": "Mostro una notifica",
     "schedule_reminder": "Imposto un promemoria",

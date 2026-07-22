@@ -12,6 +12,7 @@ import json
 import os
 import re
 import subprocess
+import threading
 import time
 import uuid
 
@@ -157,6 +158,140 @@ def _focus_and_verify(match, attempts=3, pause=1.2):
                 f"$null=$w.AppActivate({_q(needles[0])})", timeout=20)
         time.sleep(pause)
     return False, foreground_window()
+
+
+# ---- PowerShell persistente (per i gesti, che devono essere immediati) ------
+
+# Avviare un processo PowerShell costa ~0.35s: accettabile per un comando
+# vocale, inaccettabile per un pinch che aggiorna il volume dieci volte al
+# secondo. Qui teniamo vivo un solo processo con i tipi gia compilati: da li
+# in poi ogni comando costa pochi millisecondi.
+_PS_PRELUDE = r'''
+Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+[Guid("5CDF2C82-841E-4546-9722-0CF74078229A"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IAudioEndpointVolume {
+  int _a(); int _b(); int _c(); int _d();
+  int SetMasterVolumeLevelScalar(float fLevel, Guid ctx);
+  int _e();
+  int GetMasterVolumeLevelScalar(out float pfLevel);
+  int _f(); int _g(); int _h(); int _i();
+  int SetMute([MarshalAs(UnmanagedType.Bool)] bool bMute, Guid ctx);
+  int GetMute(out bool pbMute);
+}
+[Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IMMDevice { int Activate(ref Guid id, int ctx, IntPtr p, out IAudioEndpointVolume v); }
+[Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IMMDeviceEnumerator { int _a(); int GetDefaultAudioEndpoint(int flow, int role, out IMMDevice dev); }
+[ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")] class MMDeviceEnumeratorComObject { }
+public class JvAudio {
+  static IAudioEndpointVolume V() {
+    var e = new MMDeviceEnumeratorComObject() as IMMDeviceEnumerator;
+    IMMDevice d = null; Marshal.ThrowExceptionForHR(e.GetDefaultAudioEndpoint(0, 1, out d));
+    IAudioEndpointVolume v = null; var g = typeof(IAudioEndpointVolume).GUID;
+    Marshal.ThrowExceptionForHR(d.Activate(ref g, 23, IntPtr.Zero, out v)); return v;
+  }
+  public static int Get(){ float v; V().GetMasterVolumeLevelScalar(out v); return (int)Math.Round(v*100); }
+  public static void Set(int p){ V().SetMasterVolumeLevelScalar(Math.Max(0,Math.Min(100,p))/100f, Guid.Empty); }
+  public static void Mute(bool m){ V().SetMute(m, Guid.Empty); }
+  public static bool Muted(){ bool m; V().GetMute(out m); return m; }
+  public static void ToggleMute(){ Mute(!Muted()); }
+}
+public class JvWin {
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int cx, int cy, uint f);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
+  [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr h);
+  [DllImport("user32.dll")] public static extern int GetWindowText(IntPtr h, System.Text.StringBuilder s, int n);
+  public static string Title(){ var sb = new System.Text.StringBuilder(300); GetWindowText(GetForegroundWindow(), sb, 300); return sb.ToString(); }
+}
+"@ -ErrorAction SilentlyContinue
+
+function Move-JvWindow($dir) {
+  $h = [JvWin]::GetForegroundWindow()
+  if ($h -eq [IntPtr]::Zero) { return }
+  $r = New-Object JvWin+RECT
+  [void][JvWin]::GetWindowRect($h, [ref]$r)
+  $cx = ($r.Left + $r.Right) / 2
+  $screens = @([System.Windows.Forms.Screen]::AllScreens | Sort-Object { $_.Bounds.X })
+  if ($screens.Count -lt 2) { return }
+  $cur = 0
+  for ($i = 0; $i -lt $screens.Count; $i++) {
+    $b = $screens[$i].Bounds
+    if ($cx -ge $b.X -and $cx -lt ($b.X + $b.Width)) { $cur = $i }
+  }
+  $t = if ($dir -eq 'right') { $cur + 1 } else { $cur - 1 }
+  if ($t -lt 0 -or $t -ge $screens.Count) { return }
+  # Una finestra massimizzata va prima ripristinata, spostata e poi rimassimizzata.
+  $max = [JvWin]::IsZoomed($h)
+  if ($max) { [void][JvWin]::ShowWindow($h, 9) }
+  [void][JvWin]::GetWindowRect($h, [ref]$r)
+  $w = $r.Right - $r.Left; $ht = $r.Bottom - $r.Top
+  $src = $screens[$cur].WorkingArea; $dst = $screens[$t].WorkingArea
+  $relX = ($r.Left - $src.X) / [double]$src.Width
+  $relY = ($r.Top - $src.Y) / [double]$src.Height
+  $w = [Math]::Min($w, $dst.Width); $ht = [Math]::Min($ht, $dst.Height)
+  $nx = [int]($dst.X + $relX * $dst.Width)
+  $ny = [int]($dst.Y + $relY * $dst.Height)
+  $nx = [Math]::Max($dst.X, [Math]::Min($nx, $dst.X + $dst.Width - $w))
+  $ny = [Math]::Max($dst.Y, [Math]::Min($ny, $dst.Y + $dst.Height - $ht))
+  [void][JvWin]::SetWindowPos($h, [IntPtr]::Zero, $nx, $ny, $w, $ht, 0x0004)
+  if ($max) { [void][JvWin]::ShowWindow($h, 3) }
+}
+'''
+
+
+class _PSWorker:
+    """Processo PowerShell sempre acceso, per i comandi che devono volare.
+
+    I comandi si mandano e basta (nessuna lettura dell'output): ai gesti serve
+    velocita, non conferma. Se il processo muore viene ricreato al volo.
+    """
+
+    def __init__(self):
+        self._proc = None
+        self._lock = threading.Lock()
+
+    def _spawn(self):
+        proc = subprocess.Popen(
+            ["powershell", "-NoProfile", "-NonInteractive",
+             "-ExecutionPolicy", "Bypass", "-Command", "-"],
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            text=True, encoding="utf-8", errors="replace",
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        proc.stdin.write(_PS_PRELUDE + "\n")
+        proc.stdin.flush()
+        return proc
+
+    def send(self, command):
+        with self._lock:
+            try:
+                if self._proc is None or self._proc.poll() is not None:
+                    self._proc = self._spawn()
+                self._proc.stdin.write(command + "\n")
+                self._proc.stdin.flush()
+                return True
+            except (OSError, ValueError):
+                self._proc = None
+                return False
+
+    def stop(self):
+        with self._lock:
+            if self._proc and self._proc.poll() is None:
+                try:
+                    self._proc.stdin.write("exit\n")
+                    self._proc.stdin.flush()
+                except (OSError, ValueError):
+                    self._proc.kill()
+            self._proc = None
+
+
+_worker = _PSWorker()
 
 
 def _ok(**kw):
@@ -434,31 +569,55 @@ def power_control(action, confirm=False):
 
 # ---- Audio e multimedia ----------------------------------------------------
 
+def get_volume():
+    """Volume corrente in percentuale, oppure None se non leggibile."""
+    r = _run_ps(_PS_PRELUDE + "\n[JvAudio]::Get()", timeout=30)
+    try:
+        return int(r["stdout"].strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return None
+
+
 def set_volume(level=None, delta=None, mute=None):
-    """Regola il volume di sistema: level 0-100, delta +/-, oppure mute true/false/toggle."""
+    """Regola il volume di sistema: level 0-100, delta +/-, oppure mute.
+
+    Usa l'API audio di Windows (millisecondi) invece di simulare i tasti volume:
+    quella strada richiedeva fino a 50 pressioni e un secondo e mezzo, troppo
+    per il controllo a gesti.
+    """
     if mute is not None:
-        r = _sendkeys("[char]173")  # toggle mute
-        if r["exit_code"] != 0:
-            return _err(r["stderr"])
-        return _ok(message="Audio silenziato o riattivato.")
+        if _worker.send("[JvAudio]::ToggleMute()"):
+            return _ok(message="Audio silenziato o riattivato.")
+        return _err("Controllo audio non disponibile.")
+
     if delta is not None:
-        steps = max(1, min(50, abs(int(delta)) // 2 or 1))
-        key = "[char]175" if int(delta) > 0 else "[char]174"
-        r = _sendkeys(key, repeat=steps)
-        if r["exit_code"] != 0:
-            return _err(r["stderr"])
-        return _ok(message=f"Volume {'alzato' if int(delta) > 0 else 'abbassato'}.")
+        # Legge il valore attuale e ci somma il delta: assoluto, non a passi.
+        attuale = get_volume()
+        if attuale is None:
+            return _err("Volume attuale non leggibile.")
+        nuovo = max(0, min(100, attuale + int(delta)))
+        if _worker.send(f"[JvAudio]::Set({nuovo})"):
+            return _ok(message=f"Volume al {nuovo} per cento.", level=nuovo)
+        return _err("Controllo audio non disponibile.")
+
     if level is not None:
         lvl = max(0, min(100, int(level)))
-        r = _sendkeys("[char]174", repeat=50)   # azzera
-        if r["exit_code"] != 0:
-            return _err(r["stderr"])
-        if lvl > 0:
-            r = _sendkeys("[char]175", repeat=max(1, round(lvl / 2)))
-            if r["exit_code"] != 0:
-                return _err(r["stderr"])
-        return _ok(message=f"Volume impostato a circa {lvl}%.")
+        if _worker.send(f"[JvAudio]::Set({lvl})"):
+            return _ok(message=f"Volume al {lvl} per cento.", level=lvl)
+        return _err("Controllo audio non disponibile.")
+
     return _err("Specifica level, delta oppure mute.")
+
+
+def window_to_monitor(direction):
+    """Sposta la finestra attiva sullo schermo a sinistra o a destra."""
+    d = (direction or "").strip().lower()
+    if d not in ("left", "right", "sinistra", "destra"):
+        return _err("Direzione non valida: usa left o right.")
+    verso = "right" if d in ("right", "destra") else "left"
+    if _worker.send(f"Move-JvWindow '{verso}'"):
+        return _ok(message=f"Finestra spostata verso {'destra' if verso == 'right' else 'sinistra'}.")
+    return _err("Spostamento non riuscito.")
 
 
 def media_control(action):
