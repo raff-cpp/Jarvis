@@ -162,6 +162,18 @@ def ws(conn):
             _clients.discard(conn)
 
 
+def _campo(msg, nome):
+    """Legge un campo di testo dal messaggio senza fidarsi del tipo.
+
+    Un frame malformato (un numero o una lista dove ci va una stringa) faceva
+    cadere l'intera connessione WebSocket, e con essa la HUD: il .strip()
+    esplodeva e Flask chiudeva il socket. Qui tutto cio' che non e' testo
+    diventa stringa vuota, cioe' "campo assente".
+    """
+    v = msg.get(nome)
+    return v.strip() if isinstance(v, str) else ""
+
+
 def _ws_loop(conn):
     while True:
         raw = conn.receive()
@@ -170,6 +182,8 @@ def _ws_loop(conn):
         try:
             msg = json.loads(raw)
         except (ValueError, TypeError):
+            continue
+        if not isinstance(msg, dict):
             continue
 
         def send(obj):
@@ -186,11 +200,16 @@ def _ws_loop(conn):
                 send({"type": "gesture_ack", "text": esito})
             continue
 
+        if msg.get("type") == "presence":
+            _handle_presence(_campo(msg, "event").lower())
+            continue
+
         if msg.get("type") != "command":
             continue
-        text = (msg.get("text") or "").strip()
+        text = _campo(msg, "text")
         if not text:
             continue
+        _segna_attivita()
 
         try:
             with _brain_lock:
@@ -214,8 +233,9 @@ def _handle_gesture(msg):
     Il risultato riportato e' quello VERO: prima questa funzione annunciava
     "Finestra spostata" anche quando lo strumento non aveva fatto nulla.
     """
-    action = (msg.get("action") or "").strip().lower()
+    action = _campo(msg, "action").lower()
     value = msg.get("value")
+    _segna_attivita()
     try:
         if action == "volume":
             tools.set_volume(level=int(value))
@@ -243,6 +263,93 @@ def _handle_gesture(msg):
         print("[jarvis] gesto non riuscito: " + redact(e), file=sys.stderr)
         return "Gesto non riuscito"
     return None
+
+
+# ---- Presenza --------------------------------------------------------------
+# La webcam dei gesti sa gia' se sei davanti allo schermo. Sfruttarlo costa
+# zero: quando ti siedi Jarvis ti accoglie, quando te ne vai mette in pausa la
+# musica e blocca il PC.
+#
+# Il browser manda SOLO la parola "arrivo"/"uscita": nessuna immagine, nessun
+# volto, nessuna identita' lasciano mai la pagina.
+#
+# Il blocco automatico e' l'azione piu' invasiva di tutto il progetto, quindi e'
+# protetta tre volte: il volto deve mancare per un minuto e mezzo, non devi aver
+# usato Jarvis di recente, e un preavviso parlato ti da' il tempo di rientrare.
+
+PRESENZA = os.environ.get("JARVIS_PRESENZA", "on").strip().lower() != "off"
+PRESENZA_BLOCCO = os.environ.get("JARVIS_PRESENZA_BLOCCO", "on").strip().lower() != "off"
+
+RIENTRO_SILENZIO_S = 600    # non risalutare piu' di una volta ogni dieci minuti
+ATTIVITA_RECENTE_S = 60     # se hai appena parlato a Jarvis, non e' un'assenza
+PRESENZA_DEBOUNCE_S = 5     # piu' finestre aperte mandano lo stesso evento
+
+_presenza_lock = threading.Lock()
+_ultima_attivita = 0.0
+_ultimo_saluto = 0.0
+_ultimo_evento = {}
+
+
+def _segna_attivita():
+    """Registra che stai usando Jarvis: vale come 'sono qui'."""
+    global _ultima_attivita
+    _ultima_attivita = time.time()
+
+
+def _handle_presence(evento):
+    if not PRESENZA or evento not in ("arrivo", "uscita", "preavviso", "annulla"):
+        return
+    adesso = time.time()
+    with _presenza_lock:
+        # Due finestre della HUD manderebbero lo stesso evento in contemporanea.
+        if adesso - _ultimo_evento.get(evento, 0) < PRESENZA_DEBOUNCE_S:
+            return
+        _ultimo_evento[evento] = adesso
+    # Le azioni parlano e chiamano PowerShell: fuori dal thread del WebSocket.
+    threading.Thread(target=_presenza_azione, args=(evento, adesso),
+                     daemon=True).start()
+
+
+def _presenza_azione(evento, adesso):
+    global _ultimo_saluto
+    try:
+        if evento == "arrivo":
+            _segna_attivita()
+            # Il briefing del giorno si fa una volta sola: se non e' ancora
+            # stato fatto questo e' il momento giusto, sei appena arrivato.
+            if BRIEFING_AUTO and _fai_briefing_se_serve():
+                _ultimo_saluto = adesso
+                return
+            if adesso - _ultimo_saluto < RIENTRO_SILENZIO_S:
+                return          # sei uscito un attimo: non serve un discorso
+            if _annuncia("Bentornato, signore."):
+                _ultimo_saluto = adesso
+            return
+
+        if evento == "preavviso":
+            if not PRESENZA_BLOCCO or _in_uso(adesso):
+                return
+            _annuncia("Non la vedo piu, signore. Blocco la postazione fra quindici secondi.")
+            return
+
+        if evento == "uscita":
+            if not PRESENZA_BLOCCO or _in_uso(adesso):
+                return
+            # Prima la musica, poi il blocco: dopo il lock la sessione resta
+            # attiva e la traccia continuerebbe a suonare a schermo spento.
+            tools.pause_if_playing()
+            tools.power_control("lock")
+            return
+
+        # "annulla": sei rientrato prima del blocco. Niente voce: il preavviso
+        # era gia' un'interruzione, raddoppiarla darebbe fastidio e basta.
+    except Exception as e:
+        print("[jarvis] presenza: " + redact(e), file=sys.stderr)
+
+
+def _in_uso(adesso):
+    """True se stai chiaramente usando Jarvis: allora non e' un'assenza."""
+    return adesso - _ultima_attivita < ATTIVITA_RECENTE_S
 
 
 # ---- Scorciatoia globale ---------------------------------------------------
@@ -315,6 +422,26 @@ CITTA = os.environ.get("JARVIS_CITTA", "").strip()
 
 _watcher = watcher.Watcher(_annuncia)
 
+# Due strade portano al briefing (l'avvio del server e il tuo arrivo davanti
+# alla webcam): il lucchetto impedisce che partano insieme e lo dicano due volte.
+_briefing_lock = threading.Lock()
+
+
+def _fai_briefing_se_serve():
+    """Annuncia il riepilogo se non e' ancora stato fatto oggi. True se detto."""
+    with _briefing_lock:
+        if briefing.gia_fatto_oggi():
+            return False
+        try:
+            testo = briefing.componi(CITTA)
+        except Exception as e:
+            print("[jarvis] briefing non riuscito: " + redact(e), file=sys.stderr)
+            return False
+        if not _annuncia(testo):
+            return False
+        briefing.segna_fatto()
+        return True
+
 
 def _briefing_di_avvio():
     """Al primo avvio della giornata, Jarvis fa il punto della situazione.
@@ -329,13 +456,7 @@ def _briefing_di_avvio():
         with _clients_lock:
             if not _clients:
                 continue
-        try:
-            testo = briefing.componi(CITTA)
-        except Exception as e:
-            print("[jarvis] briefing non riuscito: " + redact(e), file=sys.stderr)
-            return
-        if _annuncia(testo):
-            briefing.segna_fatto()
+        _fai_briefing_se_serve()
         return
 
 

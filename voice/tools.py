@@ -644,6 +644,39 @@ def window_to_monitor(direction):
     return _ok(message=testo)
 
 
+def media_playing():
+    """True se una riproduzione e' davvero in corso, False altrimenti.
+
+    Serve prima di "mettere in pausa": il tasto multimediale e' un interruttore,
+    quindi premuto a vuoto FARÀ PARTIRE la musica invece di fermarla. Meglio
+    chiedere prima a Windows chi sta suonando.
+    """
+    ps = '''
+Add-Type -AssemblyName System.Runtime.WindowsRuntime -ErrorAction SilentlyContinue
+$null = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType=WindowsRuntime]
+$m = [System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
+  $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and
+  $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' } | Select-Object -First 1
+$op = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager]::RequestAsync()
+$mgr = $m.MakeGenericMethod([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager]).Invoke($null, @($op)).Result
+$s = $mgr.GetCurrentSession()
+if ($s -and $s.GetPlaybackInfo().PlaybackStatus -eq 'Playing') { 'PLAYING' } else { 'NO' }
+'''
+    r = _run_ps(ps, timeout=25)
+    return r["stdout"].strip().endswith("PLAYING")
+
+
+def pause_if_playing():
+    """Mette in pausa solo se qualcosa sta effettivamente suonando."""
+    try:
+        if not media_playing():
+            return _ok(message="Nessuna riproduzione in corso.", paused=False)
+    except Exception:
+        return _ok(message="Stato riproduzione non verificabile.", paused=False)
+    media_control("play_pause")
+    return _ok(message="Riproduzione messa in pausa.", paused=True)
+
+
 def media_control(action):
     """Controlla la riproduzione multimediale: play_pause, next, previous, stop.
 

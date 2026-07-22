@@ -17,6 +17,17 @@
   const CDN = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35";
   const MODEL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker" +
                 "/hand_landmarker/float16/1/hand_landmarker.task";
+  const MODEL_VOLTO = "https://storage.googleapis.com/mediapipe-models/face_detector" +
+                      "/blaze_face_short_range/float16/1/blaze_face_short_range.tflite";
+
+  /* --- Presenza ---
+     Riconoscere che ti sei seduto o che te ne sei andato. Le soglie sono
+     volutamente LARGHE: bloccare lo schermo per sbaglio mentre leggi un foglio
+     fuori inquadratura sarebbe molto più fastidioso di un blocco mancato. */
+  const VOLTO_OGNI_MS = 500;      // il volto non serve a 30 fps: basta ogni mezzo secondo
+  const ARRIVO_CONFERMA_MS = 1500; // quanto devi restare inquadrato per contare come "arrivato"
+  const USCITA_PREAVVISO_MS = 75000;  // dopo quanto avvisa che sta per bloccare
+  const USCITA_MS = 90000;            // dopo quanto considera che te ne sei andato
 
   /* --- Soglie --- */
   const ARM_HOLD_MS = 600;      // quanto tenere il palmo aperto per armare
@@ -93,6 +104,8 @@
   const GRAB_TOLLERANZA_MS = 450; // fotogrammi incerti tollerati senza azzerare
 
   let landmarker = null;
+  let faceDetector = null;
+  let onPresence = () => {};
   let stream = null;
   let running = false;
   let video = null;
@@ -431,6 +444,54 @@
     return p;
   }
 
+  /* ---------- presenza ----------
+     Macchina a stati semplice: sei qui o non ci sei. Il passaggio richiede
+     conferma nel tempo in entrambe le direzioni, così un volto girato per un
+     istante non ti fa "uscire" e un passante non ti fa "arrivare". */
+  let presente = false;
+  let voltoDa = 0;        // da quando si vede un volto senza interruzioni
+  let voltoUltimo = 0;    // ultimo istante in cui si e' visto un volto
+  let preavvisato = false;
+  let prossimoControlloVolto = 0;
+
+  function aggiornaPresenza(now) {
+    if (!faceDetector || now < prossimoControlloVolto) return;
+    prossimoControlloVolto = now + VOLTO_OGNI_MS;
+
+    let visto = false;
+    try {
+      const r = faceDetector.detectForVideo(video, now);
+      visto = !!(r && r.detections && r.detections.length);
+    } catch (e) { return; }   // fotogramma non utilizzabile: riproviamo dopo
+
+    if (visto) {
+      voltoUltimo = now;
+      if (!voltoDa) voltoDa = now;
+      if (preavvisato) {        // eri tornato prima che bloccasse
+        preavvisato = false;
+        onPresence({ tipo: "annulla" });
+      }
+      if (!presente && now - voltoDa >= ARRIVO_CONFERMA_MS) {
+        presente = true;
+        onPresence({ tipo: "arrivo" });
+      }
+      return;
+    }
+
+    voltoDa = 0;
+    if (!presente) return;
+    const assenteDa = now - voltoUltimo;
+    if (!preavvisato && assenteDa >= USCITA_PREAVVISO_MS) {
+      preavvisato = true;
+      onPresence({ tipo: "preavviso" });
+    }
+    if (assenteDa >= USCITA_MS) {
+      presente = false;
+      preavvisato = false;
+      onPresence({ tipo: "uscita" });
+    }
+  }
+
   /* ---------- ciclo principale ---------- */
   function loop() {
     if (!running) return;
@@ -446,6 +507,9 @@
         }
       } catch (e) { /* fotogramma saltato: non è un problema */ }
     }
+    // Presenza: costa poco, gira a parte dal riconoscimento dei gesti.
+    try { aggiornaPresenza(now); } catch (e) { /* mai fermare il ciclo */ }
+
     // Disarmo automatico: se la mano sparisce, i comandi si spengono.
     if (armed && now - lastSeen > DISARM_MS) {
       armed = false;
@@ -465,6 +529,7 @@
   async function start(opts) {
     onEvent = opts.onEvent || onEvent;
     onState = opts.onState || onState;
+    onPresence = opts.onPresence || onPresence;
     video = opts.video;
     overlay = opts.overlay;
     octx = overlay ? overlay.getContext("2d") : null;
@@ -477,6 +542,17 @@
         runningMode: "VIDEO",
         numHands: 1,
       });
+      /* Rilevatore di volti: serve solo a sapere se sei alla scrivania, quindi
+         gira a mezzo hertz e non pesa. Se non si carica, i gesti funzionano
+         lo stesso: la presenza e' un di piu', non deve poter rompere nulla. */
+      try {
+        faceDetector = await vision.FaceDetector.createFromOptions(fileset, {
+          baseOptions: { modelAssetPath: MODEL_VOLTO, delegate: "GPU" },
+          runningMode: "VIDEO",
+        });
+      } catch (e) {
+        faceDetector = null;
+      }
     }
 
     stream = await navigator.mediaDevices.getUserMedia({
@@ -493,6 +569,7 @@
   function stop() {
     running = false;
     armed = false;
+    presente = false; voltoDa = 0; voltoUltimo = 0; preavvisato = false;
     filtroPinch.reset();
     apertaFinoA = 0;
     pugnoDa = 0;

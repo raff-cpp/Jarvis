@@ -208,6 +208,33 @@ ferma e dopo un decimo di secondo, perché è l'unico gesto con effetto continuo
 > serve, anche perché occupa la camera e le videochiamate non la troverebbero
 > libera.
 
+## Ti riconosce quando arrivi e quando te ne vai
+
+La stessa webcam che guarda le mani si accorge anche se sei alla scrivania. Non
+serve attivare nulla in più: basta che **GESTI** sia acceso.
+
+| Cosa succede | Cosa fa Jarvis |
+|---|---|
+| Ti siedi (volto inquadrato per 1,5 s) | «Bentornato, signore» — e la prima volta della giornata ti fa il riepilogo senza che tu chieda nulla |
+| Sparisci per 75 s | ti avvisa a voce che sta per bloccare |
+| Sparisci per 90 s | mette in pausa la musica e **blocca il PC** |
+| Rientri prima del blocco | annulla tutto in silenzio |
+
+**Cosa esce dal browser:** la parola `arrivo` o `uscita`, nient'altro. Nessuna
+immagine, nessun volto, nessun dato biometrico lascia mai la pagina — il
+riconoscimento gira in locale come quello delle mani, e il server riceve solo
+l'esito.
+
+Il blocco automatico è l'azione più invasiva del progetto, quindi ha **tre
+protezioni**: un minuto e mezzo di assenza continuata, un preavviso parlato che
+ti lascia il tempo di rientrare, e il fatto che non scatta mai se hai dato un
+comando a Jarvis nell'ultimo minuto (stai chiaramente lavorando, ti sei solo
+sporto fuori inquadratura). La musica viene fermata **prima** del blocco: dopo,
+la sessione resta attiva e la traccia continuerebbe a suonare a schermo spento.
+
+Se vuoi solo il saluto, metti `JARVIS_PRESENZA_BLOCCO=off` nel `.env`; per
+disattivare tutto, `JARVIS_PRESENZA=off`.
+
 ## Jarvis parla per primo
 
 Non aspetta sempre di essere interrogato. Sorveglia alcune cose e ti avvisa a
@@ -280,6 +307,12 @@ negativi = più lento e più grave).
 
 Se il server non riesce a sintetizzare (rete assente), la HUD ripiega
 automaticamente sulle voci del browser, che restano in fondo allo stesso menu.
+
+**Il reattore pulsa sulla sua voce vera.** Mentre Jarvis parla, l'anello attorno
+al nucleo non esegue più un'animazione finta: l'audio della voce passa da un
+analizzatore di spettro e le barre si muovono sulle **sillabe reali**, simmetriche
+sui due lati. Quando invece sei tu a parlare, l'anello segue il microfono; quando
+non c'è audio torna all'animazione di riposo.
 
 ## Scrivere al posto tuo
 

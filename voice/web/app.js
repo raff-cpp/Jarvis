@@ -315,6 +315,7 @@
       url = URL.createObjectURL(blob);
       const audio = new Audio(url);
       currentAudio = audio;
+      collegaAnalisiVoce(audio);   // il reattore pulserà sulla voce vera
       audio.onended = audio.onerror = () => {
         URL.revokeObjectURL(url);
         if (currentAudio === audio) currentAudio = null;
@@ -350,6 +351,10 @@
        si risentirebbe da solo e finirebbe in loop. */
     speaking = true;
     speakStartedAt = Date.now();
+    /* Vale per una frase sola: la voce del browser non passa dall'analizzatore
+       e il reattore deve tornare all'animazione sintetica invece di restare
+       piatto sull'ultimo spettro. */
+    voceAgganciata = false;
     disarm();                   // una parola d'attivazione non deve sopravvivere alla risposta
     /* In ascolto continuo il microfono resta acceso, così puoi interromperlo
        dicendo "basta". È sicuro perché mentre parla l'unica azione ammessa è
@@ -578,6 +583,35 @@
   const ctx = canvas.getContext("2d");
   let analyser = null, freq = null, vizStarted = false;
 
+  /* Analisi della VOCE di Jarvis: finora, mentre parlava, l'anello attorno al
+     reattore disegnava un'onda finta. Agganciando l'audio del TTS il reattore
+     pulsa sulle sillabe reali. */
+  let audioCtx = null, vozAnalyser = null, vozFreq = null, voceAgganciata = false;
+
+  function collegaAnalisiVoce(audio) {
+    try {
+      if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        vozAnalyser = audioCtx.createAnalyser();
+        vozAnalyser.fftSize = 128;
+        vozAnalyser.smoothingTimeConstant = 0.6;
+        vozFreq = new Uint8Array(vozAnalyser.frequencyBinCount);
+        vozAnalyser.connect(audioCtx.destination);
+      }
+      /* Attenzione: una volta agganciato, l'audio dell'elemento passa SOLO dal
+         grafo. Se il contesto è sospeso (autoplay non ancora sbloccato) la voce
+         diventerebbe muta, quindi in quel caso non si aggancia niente: si
+         chiede lo sblocco e questa frase esce dall'elemento come sempre. */
+      if (audioCtx.state !== "running") { audioCtx.resume(); return; }
+      // Una sorgente per elemento: ogni frase ha il suo <audio>, quindi va bene.
+      audioCtx.createMediaElementSource(audio).connect(vozAnalyser);
+      voceAgganciata = true;
+    } catch (e) {
+      /* Se il collegamento fallisce l'audio si sente lo stesso: il reattore
+         torna semplicemente all'animazione sintetica. */
+    }
+  }
+
   function initViz() {
     if (vizStarted || !navigator.mediaDevices) return;
     vizStarted = true;
@@ -597,14 +631,27 @@
     ctx.clearRect(0, 0, w, h);
     const glow = getComputedStyle(body).getPropertyValue("--glow").trim() || "#35e0ff";
     const bars = 72, R = 175;
-    const live = analyser && listening;
-    if (live) analyser.getByteFrequencyData(freq);
+    /* Tre sorgenti, in ordine di priorità: la voce di Jarvis mentre parla, il
+       microfono mentre ascolta, l'animazione sintetica quando non c'è audio. */
+    const voce = speaking && voceAgganciata && vozAnalyser;
+    const live = !voce && analyser && listening;
+    if (voce) vozAnalyser.getByteFrequencyData(vozFreq);
+    else if (live) analyser.getByteFrequencyData(freq);
 
     ctx.save();
     ctx.translate(w / 2, h / 2);
     for (let i = 0; i < bars; i++) {
       let v;
-      if (live) {
+      if (voce) {
+        /* La voce vive nelle prime bande (sotto i ~4 kHz): distribuirla su
+           tutte e 64 lascerebbe metà anello immobile. Si usano solo le bande
+           utili e si specchiano sui due lati, così il reattore pulsa
+           simmetrico sulle sillabe invece di scorrere come un equalizzatore. */
+        const utili = 16;
+        const d = Math.abs(bars / 2 - i) / (bars / 2);   // 0 al centro, 1 ai lati
+        v = Math.min(1, (vozFreq[Math.floor(d * (utili - 1))] / 255) * 1.35);
+        v = Math.max(v, 0.08);   // nelle pause fra le parole resta acceso, non morto
+      } else if (live) {
         v = freq[i % freq.length] / 255;
       } else {
         const t = Date.now() / 600;
@@ -635,6 +682,13 @@
     ws.send(JSON.stringify({ type: "gesture", action: ev.action, value: ev.value }));
   }
 
+  /* Presenza: la webcam vede solo se c'è un volto, e questo è tutto ciò che
+     lascia il browser. Nessuna immagine e nessuna identità vengono trasmesse. */
+  function sendPresence(ev) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: "presence", event: ev.tipo }));
+  }
+
   function gestureState(s) {
     body.classList.toggle("gest-armed", !!s.armed);
     if (s.hint) {
@@ -658,6 +712,7 @@
         overlay: document.getElementById("cam-overlay"),
         onEvent: sendGesture,
         onState: gestureState,
+        onPresence: sendPresence,
       });
       camState.textContent = "palmo aperto per attivare";
       localStorage.setItem(GEST_KEY, "1");
