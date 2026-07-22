@@ -26,6 +26,7 @@ browser, riconoscimento vocale, sintesi vocale italiana e un cervello **Gemini**
 
 | Modo | Come |
 |---|---|
+| **Scorciatoia globale** | **Ctrl+Alt+J** da qualunque applicazione: la HUD viene in primo piano e il microfono si apre già armato. |
 | **Push-to-talk** | Clicca il microfono e parla. |
 | **Sempre in ascolto** | Attiva *Ascolto continuo*: risponde solo dopo la parola «Jarvis». |
 | **Senza parola chiave** | Ascolto continuo + togli *Parola d'attivazione*: esegue qualunque frase. |
@@ -33,6 +34,14 @@ browser, riconoscimento vocale, sintesi vocale italiana e un cervello **Gemini**
 
 Puoi dire tutto in una frase (*«Jarvis, apri Firefox»*) oppure solo *«Jarvis»*, aspettare
 che il reattore si illumini e poi dare il comando.
+
+**Per interromperlo mentre parla** di' *«basta»* (o stop, fermati, zitto). Funziona
+solo in **ascolto continuo**, e solo se la parola è pronunciata da sola: mentre
+parla nessun'altra frase viene interpretata, così una parola captata per sbaglio
+può al massimo zittirlo — mai far partire un comando.
+
+La scorciatoia **Ctrl+Alt+J** si cambia con `JARVIS_HOTKEY` nel file `.env`. Se un
+altro programma la occupa già, Jarvis lo scrive all'avvio e parte lo stesso.
 
 Esempi: *«che ore sono»*, *«com'e messo il PC»*, *«apri VS Code»*, *«alza il volume»*,
 *«metti in pausa la musica»*, *«guarda lo schermo e dimmi cosa vedi»*, *«cerca i file

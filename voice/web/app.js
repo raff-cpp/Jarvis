@@ -22,9 +22,18 @@
   const WAKE_RE = /\b(jarvis|jarviss|jervis|giarvis|charvis|djarvis|jarbis)\b[\s,.:;!?]*/i;
   const ARM_TIMEOUT_MS = 9000;
 
+  /* Interruzione a voce: solo queste parole, e solo se sono TUTTO ciò che è
+     stato detto. Il microfono resta acceso mentre Jarvis parla, quindi la
+     regola dev'essere strettissima: qualunque altra frase viene ignorata,
+     altrimenti si torna al loop in cui Jarvis si risponde da solo. */
+  const STOP_RE = /^(basta|stop|fermati|fermo|zitto|taci|silenzio|ok basta|va bene basta)$/i;
+  const BARGE_GRACE_MS = 800;   // ignora l'inizio: è lì che l'eco è più probabile
+
   let processing = false;   // Jarvis sta elaborando
   let listening = false;    // riconoscimento attivo
   let speaking = false;     // TTS in corso
+  let speakStartedAt = 0;   // per la grazia iniziale dell'interruzione
+  let speechEndedAt = 0;    // per scartare la coda dell'eco
   let booted = false;
   let armed = false;        // wake word gia sentita: prossima frase = comando
   let armTimer = null;
@@ -108,6 +117,13 @@
       } else if (m.type === "say") {
         addEntry(m.text, "jarvis");
         speak(m.text);
+      } else if (m.type === "wake") {
+        // Scorciatoia globale premuta: apri il microfono già armato.
+        shutUp();
+        initViz();
+        arm();
+        startListen();
+        caption.textContent = "Sì, signore?";
       } else if (m.type === "gesture_ack") {
         addEntry(m.text, "act");           // solo i gesti discreti, non il volume
       } else if (m.type === "done") {
@@ -250,6 +266,7 @@
   function onSpeakEnd(gen) {
     if (gen !== speechGen) return;      // sorpassata da una frase più recente
     speaking = false;
+    speechEndedAt = Date.now();
     // Piccola attesa: la coda dell'audio e il riverbero non devono finire
     // dentro il microfono e farsi trascrivere come un comando.
     setTimeout(() => {
@@ -306,8 +323,14 @@
        quella finestra il messaggio "done" riaccenderebbe il microfono. Jarvis
        si risentirebbe da solo e finirebbe in loop. */
     speaking = true;
+    speakStartedAt = Date.now();
     disarm();                   // una parola d'attivazione non deve sopravvivere alla risposta
-    stopListen();               // microfono spento mentre parla
+    /* In ascolto continuo il microfono resta acceso, così puoi interromperlo
+       dicendo "basta". È sicuro perché mentre parla l'unica azione ammessa è
+       zittirlo: nessuna frase può diventare un comando, quindi un falso
+       riconoscimento non può innescare il loop. Fuori dall'ascolto continuo il
+       microfono si spegne come prima. */
+    if (!continuousBox.checked) stopListen();
     rememberSpoken(text);       // per riconoscere la propria eco
     setState("speaking");
     caption.textContent = text;
@@ -360,7 +383,8 @@
       listening = false;
       micBtn.classList.remove("active");
       // In ascolto continuo il motore si ferma da solo: lo riavviamo.
-      if (continuousBox.checked && !processing && !speaking) {
+      // Anche mentre Jarvis parla, per poterlo interrompere a voce.
+      if (continuousBox.checked && !processing) {
         setTimeout(startListen, 250);
       }
     };
@@ -451,7 +475,23 @@
   function handleFinal(transcript) {
     // Jarvis che risente se stesso: ignora, altrimenti si autoalimenta.
     if (isEcho(transcript)) return;
-    if (speaking || processing) return;   // niente comandi mentre parla o elabora
+
+    /* Interruzione a voce. Vale solo mentre parla, solo per le parole di stop
+       pronunciate da sole, e solo dopo una breve grazia iniziale. */
+    if (speaking) {
+      const pulito = transcript.trim().replace(/[.,!?;:]+$/, "");
+      if (STOP_RE.test(pulito) && Date.now() - speakStartedAt > BARGE_GRACE_MS) {
+        shutUp();
+        caption.textContent = "Come desidera.";
+        addEntry("Interrotto.", "sys");
+        if (!processing) goIdle();
+      }
+      return;                             // mentre parla, nient'altro passa
+    }
+
+    if (processing) return;               // niente comandi mentre elabora
+    // Coda dell'eco: quello che arriva subito dopo la voce è quasi sempre suo.
+    if (Date.now() - speechEndedAt < 500) return;
     if (!needsWake()) {
       sendCommand(transcript);
       return;
@@ -464,7 +504,9 @@
   }
 
   function startListen() {
-    if (!recog || listening || processing || speaking) return;
+    if (!recog || listening || processing) return;
+    // Mentre parla si ascolta solo in modalità continua (per il "basta").
+    if (speaking && !continuousBox.checked) return;
     try { recog.start(); } catch (e) { /* gia avviato */ }
   }
   function stopListen() {

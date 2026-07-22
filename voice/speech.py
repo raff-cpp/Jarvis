@@ -9,6 +9,7 @@ risponde con un errore e la HUD ripiega sulla voce del browser.
 """
 import asyncio
 import os
+import threading
 
 try:
     import edge_tts
@@ -52,6 +53,36 @@ async def _synth(text, voice, rate, pitch):
     return bytes(audio)
 
 
+"""Cache dell'audio già sintetizzato.
+
+I comandi diretti rispondono in pochi millisecondi ma dicono sempre le stesse
+frasi ("Fatto.", "Volume alzato."): sintetizzarle daccapo ogni volta aggiungeva
+quasi un secondo di silenzio a un'azione per il resto istantanea. Qui l'audio
+viene tenuto in memoria e riusato.
+"""
+_cache = {}
+_cache_lock = threading.Lock()
+_CACHE_MAX = 200
+
+# Frasi fisse pronunciate dai comandi diretti e dalla HUD: le prepariamo
+# all'avvio, così sono pronte già alla prima volta.
+FRASI_FISSE = [
+    "Fatto.",
+    "Volume alzato.",
+    "Volume abbassato.",
+    "Traccia successiva.",
+    "Traccia precedente.",
+    "Blocco lo schermo.",
+    "Sono a sua disposizione, signore.",
+    "Certamente.",
+    "Non sono riuscito a completare la richiesta. Controlla la console per il dettaglio.",
+]
+
+
+def _chiave(text, voice, rate, pitch):
+    return (text, resolve(voice), rate or RATE, pitch or PITCH)
+
+
 def synthesize(text, voice=None, rate=None, pitch=None):
     """Ritorna i byte MP3 del testo pronunciato. Solleva se la sintesi fallisce."""
     if not available:
@@ -59,4 +90,38 @@ def synthesize(text, voice=None, rate=None, pitch=None):
     text = (text or "").strip()
     if not text:
         raise ValueError("testo vuoto")
-    return asyncio.run(_synth(text, resolve(voice), rate or RATE, pitch or PITCH))
+
+    k = _chiave(text, voice, rate, pitch)
+    with _cache_lock:
+        pronto = _cache.get(k)
+    if pronto is not None:
+        return pronto
+
+    audio = asyncio.run(_synth(text, k[1], k[2], k[3]))
+    with _cache_lock:
+        if len(_cache) >= _CACHE_MAX:          # sfoltisce le più vecchie
+            for vecchia in list(_cache)[:_CACHE_MAX // 4]:
+                _cache.pop(vecchia, None)
+        _cache[k] = audio
+    return audio
+
+
+def prewarm(voice=None):
+    """Sintetizza in anticipo le frasi fisse. Va lanciato in un thread a parte:
+    ognuna costa circa un secondo e non deve rallentare l'avvio."""
+    if not available:
+        return 0
+    fatte = 0
+    for frase in FRASI_FISSE:
+        try:
+            synthesize(frase, voice)
+            fatte += 1
+        except Exception:
+            break          # niente rete: riproveremo alla prima richiesta vera
+    return fatte
+
+
+def cache_info():
+    with _cache_lock:
+        return {"voci": len(_cache),
+                "byte": sum(len(v) for v in _cache.values())}

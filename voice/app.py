@@ -37,6 +37,25 @@ jarvis = Jarvis()
 # concorrenti non si intrecciano nella stessa cronologia.
 _brain_lock = threading.Lock()
 
+# Connessioni HUD aperte: servono per spingere messaggi dal server al browser
+# (finora il traffico andava solo nell'altro verso).
+_clients = set()
+_clients_lock = threading.Lock()
+
+
+def _broadcast(obj):
+    """Manda un messaggio a tutte le HUD collegate."""
+    data = json.dumps(obj)
+    with _clients_lock:
+        morte = []
+        for c in _clients:
+            try:
+                c.send(data)
+            except Exception:
+                morte.append(c)
+        for c in morte:
+            _clients.discard(c)
+
 
 @app.after_request
 def _no_store(resp):
@@ -103,6 +122,16 @@ def reset():
 
 @sock.route("/ws")
 def ws(conn):
+    with _clients_lock:
+        _clients.add(conn)
+    try:
+        _ws_loop(conn)
+    finally:
+        with _clients_lock:
+            _clients.discard(conn)
+
+
+def _ws_loop(conn):
     while True:
         raw = conn.receive()
         if raw is None:
@@ -172,6 +201,68 @@ def _handle_gesture(msg):
     return None
 
 
+# ---- Scorciatoia globale ---------------------------------------------------
+# Senza, per parlare a Jarvis bisogna prima andare a cercare la sua finestra.
+# Con Ctrl+Alt+J lo richiami da qualunque applicazione: la HUD viene in primo
+# piano e il microfono si apre gia armato.
+
+HOTKEY = os.environ.get("JARVIS_HOTKEY", "ctrl+alt+j").strip().lower()
+
+_VK = {**{c: ord(c.upper()) for c in "abcdefghijklmnopqrstuvwxyz0123456789"},
+       "space": 0x20, "f1": 0x70, "f2": 0x71, "f3": 0x72, "f4": 0x73,
+       "f5": 0x74, "f6": 0x75, "f7": 0x76, "f8": 0x77, "f9": 0x78,
+       "f10": 0x79, "f11": 0x7A, "f12": 0x7B}
+_MOD = {"alt": 0x0001, "ctrl": 0x0002, "control": 0x0002,
+        "shift": 0x0004, "win": 0x0008}
+
+
+def _parse_hotkey(spec):
+    """'ctrl+alt+j' -> (modificatori, tasto). None se non interpretabile."""
+    mods, tasto = 0, None
+    for pezzo in spec.split("+"):
+        pezzo = pezzo.strip()
+        if pezzo in _MOD:
+            mods |= _MOD[pezzo]
+        elif pezzo in _VK:
+            tasto = _VK[pezzo]
+    return (mods, tasto) if mods and tasto else None
+
+
+def _on_hotkey():
+    """Porta la HUD in primo piano e apre il microfono."""
+    try:
+        # Il worker PowerShell e gia acceso: la finestra viene su all'istante.
+        tools._worker.send(
+            "$w = New-Object -ComObject WScript.Shell; $null = $w.AppActivate('J.A.R.V.I.S.')")
+    except Exception:
+        pass
+    _broadcast({"type": "wake"})
+
+
+def _hotkey_loop():
+    import ctypes
+    from ctypes import wintypes
+
+    combo = _parse_hotkey(HOTKEY)
+    if not combo:
+        print(f"[jarvis] scorciatoia '{HOTKEY}' non interpretabile, ignorata.", file=sys.stderr)
+        return
+    mods, tasto = combo
+    user32 = ctypes.windll.user32
+    MOD_NOREPEAT = 0x4000
+    # RegisterHotKey e il ciclo dei messaggi devono stare nello STESSO thread.
+    if not user32.RegisterHotKey(None, 1, mods | MOD_NOREPEAT, tasto):
+        print(f"[jarvis] scorciatoia {HOTKEY.upper()} non disponibile "
+              "(probabilmente gia usata da un altro programma).", file=sys.stderr)
+        return
+    print(f"  Scorciatoia globale: {HOTKEY.upper()}")
+    msg = wintypes.MSG()
+    WM_HOTKEY = 0x0312
+    while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+        if msg.message == WM_HOTKEY:
+            _on_hotkey()
+
+
 def _port_in_use():
     """True se qualcosa ascolta gia sulla porta di Jarvis."""
     import socket
@@ -217,6 +308,10 @@ def main():
         return
 
     threading.Thread(target=_serve, daemon=True).start()
+    # Prepara in anticipo l'audio delle frasi fisse: i comandi diretti diventano
+    # istantanei anche la prima volta. In un thread, non blocca l'avvio.
+    threading.Thread(target=speech.prewarm, daemon=True).start()
+    threading.Thread(target=_hotkey_loop, daemon=True).start()
     time.sleep(1.2)
     url = f"http://127.0.0.1:{PORT}/"
     try:
