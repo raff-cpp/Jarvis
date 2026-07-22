@@ -33,7 +33,7 @@
      un'ora, ti alzavi e tornavi e non succedeva piu' niente per un'ora.
      Il saluto puo' permettersi di sbagliare (una frase di troppo), il blocco
      no: da qui i due ordini di grandezza di differenza. */
-  const ASSENZA_SALUTO_MS = 180000;     // 3 minuti: al ritorno ti risaluta
+  const ASSENZA_SALUTO_MS = 60000;      // 1 minuto: al ritorno ti risaluta
   const USCITA_PREAVVISO_MS = 3540000;  // 59 minuti: avvisa che sta per bloccare
   const USCITA_MS = 3600000;            // un'ora: solo ora blocca la postazione
 
@@ -244,10 +244,44 @@
                  [10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[17,18],
                  [18,19],[19,20],[0,17]];
 
+  /* Riscontro della presenza: senza, non c'e' modo di sapere se la webcam ti
+     vede in faccia, e l'unico modo di collaudare la funzione sarebbe aspettare
+     un'ora sperando che succeda qualcosa. */
+  function mmss(ms) {
+    const s = Math.max(0, Math.floor(ms / 1000));
+    return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+  }
+
+  function disegnaPresenza(w) {
+    let testo;
+    if (!faceDetector) testo = "presenza non disponibile";
+    else if (document.hidden) testo = "presenza in pausa (finestra nascosta)";
+    else if (!voltoUltimo) testo = "presenza: cerco il volto…";
+    else if (voltoVisibile) testo = "volto ✓  ti vedo";
+    else {
+      const via = performance.now() - voltoUltimo;
+      testo = "assente da " + mmss(via) + "  → saluto fra " +
+              mmss(ASSENZA_SALUTO_MS - via);
+      if (via >= ASSENZA_SALUTO_MS) {
+        testo = "assente da " + mmss(via) + "  → blocco fra " +
+                mmss(USCITA_MS - via);
+      }
+    }
+    octx.font = "9px Consolas, monospace";
+    octx.fillStyle = voltoVisibile ? "rgba(120,255,180,.9)" : "rgba(255,220,120,.9)";
+    octx.textAlign = "right";
+    octx.fillText(testo, w - 8, 16);
+    octx.textAlign = "left";
+  }
+
   function draw(lm, p) {
     if (!octx) return;
     const w = overlay.width, h = overlay.height;
     octx.clearRect(0, 0, w, h);
+    /* PRIMA dell'uscita anticipata qui sotto: la presenza non c'entra con le
+       mani, e disegnarla dopo la farebbe comparire solo con una mano inquadrata
+       — cioe' mai, proprio quando serve controllare se ti vede in faccia. */
+    if (showNumbers) disegnaPresenza(w);
     if (!lm) return;
     const kind = p ? p.kind : null;
     const colore = armed ? (getComputedStyle(document.body)
@@ -473,9 +507,15 @@
   let preavvisato = false;
   let prossimoControlloVolto = 0;
   let erroriVolto = 0;    // fallimenti consecutivi del rilevatore
+  let voltoVisibile = false;  // ultimo esito, mostrato sull'anteprima
 
   function aggiornaPresenza(now) {
     if (!faceDetector || now < prossimoControlloVolto) return;
+    /* Finche' la webcam non ha consegnato un fotogramma, detectForVideo lancia.
+       Senza questa riga i primi istanti dopo l'accensione contavano come
+       "errori del rilevatore" e, dopo cinque, la presenza si spegneva da sola
+       per sempre: la funzione moriva proprio mentre si accendeva. */
+    if (!video || video.readyState < 2) return;
     // Quanto tempo e' passato davvero dal controllo precedente: se il ciclo era
     // sospeso il salto e' enorme e la misura dell'assenza non vale piu' nulla.
     const atteso = prossimoControlloVolto;
@@ -492,6 +532,7 @@
       const r = faceDetector.detectForVideo(video, now);
       visto = !!(r && r.detections && r.detections.length);
       erroriVolto = 0;
+      voltoVisibile = visto;   // solo per il riscontro a schermo
     } catch (e) {
       /* Un fotogramma storto ogni tanto e' normale. Un errore PERSISTENTE no:
          misurato in browser, basta un timestamp fuori ordine e il grafo di
@@ -625,6 +666,7 @@
     armed = false;
     presente = false; uscito = false; voltoDa = 0; voltoUltimo = 0;
     preavvisato = false; erroriVolto = 0; prossimoControlloVolto = 0;
+    voltoVisibile = false;
     filtroPinch.reset();
     apertaFinoA = 0;
     pugnoDa = 0;

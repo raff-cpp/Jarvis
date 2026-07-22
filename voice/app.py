@@ -280,11 +280,12 @@ def _handle_gesture(msg):
 PRESENZA = os.environ.get("JARVIS_PRESENZA", "on").strip().lower() != "off"
 PRESENZA_BLOCCO = os.environ.get("JARVIS_PRESENZA_BLOCCO", "on").strip().lower() != "off"
 
-# Il browser manda "arrivo" solo dopo un'assenza vera (tre minuti), quindi qui
-# non serve piu' una pausa lunga: basta assorbire i doppioni, per esempio due
-# HUD aperte o l'interruttore GESTI spento e riacceso. Una pausa di dieci minuti
-# soffocava proprio il caso che conta: ti alzi, torni, e lui non ti saluta.
-RIENTRO_SILENZIO_S = 90
+# Il browser manda "arrivo" solo dopo un'assenza vera, quindi qui resta da
+# assorbire i soli doppioni: due HUD aperte, o l'interruttore GESTI spento e
+# riacceso. DEVE restare ben sotto la soglia del browser, altrimenti torna a
+# succedere quello che succedeva prima: ti alzi, torni, e lui non ti saluta
+# perche' il server sta ancora zittendo il saluto precedente.
+RIENTRO_SILENZIO_S = 30
 ATTIVITA_RECENTE_S = 60     # se hai appena parlato a Jarvis, non e' un'assenza
 PRESENZA_DEBOUNCE_S = 5     # piu' finestre aperte mandano lo stesso evento
 
