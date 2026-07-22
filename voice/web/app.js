@@ -685,6 +685,12 @@
   /* Presenza: la webcam vede solo se c'è un volto, e questo è tutto ciò che
      lascia il browser. Nessuna immagine e nessuna identità vengono trasmesse. */
   function sendPresence(ev) {
+    if (ev.tipo === "guasto") {
+      // Resta nella HUD, non va al server: non e' un evento di presenza ma un
+      // guasto da mostrare, altrimenti la funzione sembrerebbe attiva a vuoto.
+      addEntry("Rilevamento presenza non disponibile: i gesti restano attivi.", "sys");
+      return;
+    }
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     ws.send(JSON.stringify({ type: "presence", event: ev.tipo }));
   }

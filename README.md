@@ -216,9 +216,18 @@ serve attivare nulla in più: basta che **GESTI** sia acceso.
 | Cosa succede | Cosa fa Jarvis |
 |---|---|
 | Ti siedi (volto inquadrato per 1,5 s) | «Bentornato, signore» — e la prima volta della giornata ti fa il riepilogo senza che tu chieda nulla |
+| Ti alzi e torni dopo **più di 3 minuti** | ti risaluta |
 | Sparisci per 59 minuti | ti avvisa a voce che sta per bloccare |
 | Sparisci per **un'ora** | mette in pausa la musica e **blocca il PC** |
-| Rientri prima del blocco | annulla tutto in silenzio |
+| Rientri prima del blocco | annulla il blocco (e ti risaluta) |
+
+**Salutare e bloccare sono due decisioni diverse, con due timer diversi.** È il
+punto che conta di più: se condividessero la stessa soglia, portarla a un'ora
+significherebbe che ti alzi, torni, e per un'ora non succede più niente. Il
+saluto può permettersi di sbagliare — al massimo una frase di troppo — il blocco
+no. Da qui i due ordini di grandezza di differenza: **3 minuti** per il saluto,
+**un'ora** per il blocco. Sotto i 3 minuti tace: girarti verso l'altro monitor
+non deve farti risalutare ogni volta.
 
 **Cosa esce dal browser:** la parola `arrivo` o `uscita`, nient'altro. Nessuna
 immagine, nessun volto, nessun dato biometrico lascia mai la pagina — il
@@ -240,6 +249,14 @@ nell'istante esatto in cui ti risiedi. Quando fra due controlli passa molto più
 del dovuto il conteggio **riparte da zero**: di quel buco non si sa nulla, e
 l'unica ipotesi onesta è non agire. Serve quindi un'ora *davvero vista* dalla
 webcam.
+
+Se il rilevatore di volti non parte (o si rompe mentre gira) la HUD **lo dice**:
+*«Rilevamento presenza non disponibile»*. Una presenza che tace perché è rotta
+sarebbe indistinguibile da una presenza che tace perché sei lì — e i gesti
+continuano a funzionare in ogni caso.
+
+I due tempi si regolano in cima a `voice/web/gestures.js`: `ASSENZA_SALUTO_MS`
+e `USCITA_MS`.
 
 Se vuoi solo il saluto, metti `JARVIS_PRESENZA_BLOCCO=off` nel `.env`; per
 disattivare tutto, `JARVIS_PRESENZA=off`.

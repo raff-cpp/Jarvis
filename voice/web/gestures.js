@@ -26,8 +26,16 @@
      fuori inquadratura sarebbe molto più fastidioso di un blocco mancato. */
   const VOLTO_OGNI_MS = 500;      // il volto non serve a 30 fps: basta ogni mezzo secondo
   const ARRIVO_CONFERMA_MS = 1500; // quanto devi restare inquadrato per contare come "arrivato"
+
+  /* Due soglie DISTINTE, ed e' il punto piu' importante di tutta la presenza.
+     Salutare e bloccare il PC non sono la stessa decisione e non possono
+     condividere lo stesso timer: legarli voleva dire che, portando il blocco a
+     un'ora, ti alzavi e tornavi e non succedeva piu' niente per un'ora.
+     Il saluto puo' permettersi di sbagliare (una frase di troppo), il blocco
+     no: da qui i due ordini di grandezza di differenza. */
+  const ASSENZA_SALUTO_MS = 180000;     // 3 minuti: al ritorno ti risaluta
   const USCITA_PREAVVISO_MS = 3540000;  // 59 minuti: avvisa che sta per bloccare
-  const USCITA_MS = 3600000;            // un'ora: solo ora considera che te ne sei andato
+  const USCITA_MS = 3600000;            // un'ora: solo ora blocca la postazione
 
   /* Un'ora di attesa non e' un'ora di ciclo garantito: se la finestra viene
      ridotta a icona, coperta o il PC va in sospensione, il browser SOSPENDE
@@ -37,6 +45,7 @@
      dovuto, il conteggio riparte da zero: di quel buco non sappiamo nulla e
      l'unica ipotesi onesta e' non agire. */
   const SALTO_MS = 5000;
+  const ERRORI_VOLTO_MAX = 5;   // errori di fila oltre i quali la presenza si arrende
 
   /* --- Soglie --- */
   const ARM_HOLD_MS = 600;      // quanto tenere il palmo aperto per armare
@@ -457,11 +466,13 @@
      Macchina a stati semplice: sei qui o non ci sei. Il passaggio richiede
      conferma nel tempo in entrambe le direzioni, così un volto girato per un
      istante non ti fa "uscire" e un passante non ti fa "arrivare". */
-  let presente = false;
+  let presente = false;   // ai fini del SALUTO (soglia corta)
+  let uscito = false;     // ai fini del BLOCCO (soglia lunga): impedisce di ripeterlo
   let voltoDa = 0;        // da quando si vede un volto senza interruzioni
   let voltoUltimo = 0;    // ultimo istante in cui si e' visto un volto
   let preavvisato = false;
   let prossimoControlloVolto = 0;
+  let erroriVolto = 0;    // fallimenti consecutivi del rilevatore
 
   function aggiornaPresenza(now) {
     if (!faceDetector || now < prossimoControlloVolto) return;
@@ -480,11 +491,24 @@
     try {
       const r = faceDetector.detectForVideo(video, now);
       visto = !!(r && r.detections && r.detections.length);
-    } catch (e) { return; }   // fotogramma non utilizzabile: riproviamo dopo
+      erroriVolto = 0;
+    } catch (e) {
+      /* Un fotogramma storto ogni tanto e' normale. Un errore PERSISTENTE no:
+         misurato in browser, basta un timestamp fuori ordine e il grafo di
+         MediaPipe resta rotto per sempre, senza piu' guarire. Continuare a
+         chiamarlo in silenzio darebbe una presenza che sembra attiva e non lo
+         e' — il peggiore dei modi di fallire. Meglio spegnerla e dirlo. */
+      if (++erroriVolto >= ERRORI_VOLTO_MAX) {
+        faceDetector = null;
+        onPresence({ tipo: "guasto" });
+      }
+      return;
+    }
 
     if (visto) {
       voltoUltimo = now;
       if (!voltoDa) voltoDa = now;
+      uscito = false;
       if (preavvisato) {        // eri tornato prima che bloccasse
         preavvisato = false;
         onPresence({ tipo: "annulla" });
@@ -497,14 +521,22 @@
     }
 
     voltoDa = 0;
-    if (!presente) return;
+    if (!voltoUltimo) return;   // non ti ha mai visto: non c'e' assenza da misurare
     const assenteDa = now - voltoUltimo;
+
+    /* Soglia corta: smetti di risultare "presente", cosi' al ritorno ti
+       risaluta. Non produce nessun evento di per se': andarsene non si
+       annuncia, si annuncia il tornare. */
+    if (presente && assenteDa >= ASSENZA_SALUTO_MS) presente = false;
+
+    // Soglia lunga: il blocco, una volta sola per ogni assenza.
+    if (uscito) return;
     if (!preavvisato && assenteDa >= USCITA_PREAVVISO_MS) {
       preavvisato = true;
       onPresence({ tipo: "preavviso" });
     }
     if (assenteDa >= USCITA_MS) {
-      presente = false;
+      uscito = true;
       preavvisato = false;
       onPresence({ tipo: "uscita" });
     }
@@ -563,14 +595,18 @@
       /* Rilevatore di volti: serve solo a sapere se sei alla scrivania, quindi
          gira a mezzo hertz e non pesa. Se non si carica, i gesti funzionano
          lo stesso: la presenza e' un di piu', non deve poter rompere nulla. */
-      try {
-        faceDetector = await vision.FaceDetector.createFromOptions(fileset, {
-          baseOptions: { modelAssetPath: MODEL_VOLTO, delegate: "GPU" },
-          runningMode: "VIDEO",
-        });
-      } catch (e) {
-        faceDetector = null;
+      for (const delegate of ["GPU", "CPU"]) {
+        try {
+          faceDetector = await vision.FaceDetector.createFromOptions(fileset, {
+            baseOptions: { modelAssetPath: MODEL_VOLTO, delegate },
+            runningMode: "VIDEO",
+          });
+          break;
+        } catch (e) { faceDetector = null; }
       }
+      // Se non parte nemmeno su CPU va detto: una presenza che tace perche' e'
+      // rotta e' indistinguibile da una presenza che tace perche' sei li'.
+      if (!faceDetector) onPresence({ tipo: "guasto" });
     }
 
     stream = await navigator.mediaDevices.getUserMedia({
@@ -587,7 +623,8 @@
   function stop() {
     running = false;
     armed = false;
-    presente = false; voltoDa = 0; voltoUltimo = 0; preavvisato = false;
+    presente = false; uscito = false; voltoDa = 0; voltoUltimo = 0;
+    preavvisato = false; erroriVolto = 0; prossimoControlloVolto = 0;
     filtroPinch.reset();
     apertaFinoA = 0;
     pugnoDa = 0;
