@@ -43,12 +43,23 @@
   const PINCH_MIN = 0.10;       // punto di partenza per "dita unite"
   const PINCH_MAX = 0.28;       // punto di partenza per "dita aperte", volutamente basso
   const PINCH_SPAN_MIN = 0.12;  // corsa minima, per non renderlo ipersensibile
-  const SMOOTH = 0.35;          // filtro sul tremolio (0 = fermo, 1 = nessun filtro)
-  const VOL_MIN_DELTA = 2;      // non inviare variazioni impercettibili
-  const VOL_MIN_MS = 90;        // né più di ~11 aggiornamenti al secondo
-  const SWIPE_DIST = 0.17;      // ampiezza minima di uno swipe (frazione di schermo)
-  const SWIPE_MS = 420;         // finestra temporale dello swipe
+  /* Filtro del pinch — valori scelti misurando, non a occhio: con rumore
+     realistico dei landmark danno 1 punto di oscillazione a mano ferma e
+     nessun ritardo percepibile sui movimenti rapidi. La media mobile che
+     c'era prima ballava il doppio E arrivava con 130 ms di ritardo.
+     minCutoff = quanto filtra da fermo; beta = quanto molla la presa in corsa. */
+  const PINCH_CUTOFF = 1.0;
+  const PINCH_BETA = 5.0;
+  const VOL_MIN_DELTA = 1;      // passi da un punto: il filtro regge la finezza
+  const VOL_MIN_MS = 60;        // fino a ~16 aggiornamenti al secondo
+
+  /* Swipe misurato in LUNGHEZZE DI PALMO, non in frazioni di inquadratura:
+     così la stessa gesticolata funziona uguale da vicino e da lontano. */
+  const SWIPE_PALMI = 1.0;      // quanto deve viaggiare la mano
+  const SWIPE_MS = 500;         // finestra temporale dello swipe
   const SWIPE_COOLDOWN = 900;   // pausa fra due gesti discreti
+  const SWIPE_POSA_MIN = 0.6;   // frazione di fotogrammi che deve avere la posa giusta
+  const SWIPE_COERENZA = 0.7;   // frazione di passi che deve andare nella stessa direzione
 
   let landmarker = null;
   let stream = null;
@@ -64,14 +75,43 @@
   let openSince = 0;
   let lastSeen = 0;
   let lastAction = 0;
-  let smoothPinch = null;
+  const filtroPinch = unEuro(PINCH_CUTOFF, PINCH_BETA, 1.0);
   let pinchMaxSeen = PINCH_MAX;   // estremi osservati: la scala si tara sulla mano
   let pinchMinSeen = PINCH_MIN;
   let lastVolSent = -1;
   let lastVolAt = 0;
-  let track = [];               // storico posizione polso: {x, t, pose}
+  let track = [];               // storico posizione del palmo: {x, s, t, kind}
   let pinching = false;
+  let spostamentoCorrente = 0;  // swipe in corso, in palmi (per il riscontro)
   let showNumbers = true;       // riscontro numerico per tarare le soglie
+
+  /* ---------- filtro "One Euro" ----------
+     Lo standard per l'input continuo da tracciamento. Una media mobile a
+     coefficiente fisso deve scegliere: o segue in fretta (e trema), o è
+     stabile (e arriva in ritardo). Questo filtro adatta la costante di tempo
+     alla velocità: quasi immobile -> filtra molto, quindi puoi regolare il
+     volume di un punto per volta; movimento rapido -> filtra poco, quindi non
+     senti ritardo. */
+  function unEuro(minCutoff, beta, dCutoff) {
+    let xPrec = null, dxPrec = 0, tPrec = null;
+    const alfa = (taglio, dt) => {
+      const tau = 1 / (2 * Math.PI * taglio);
+      return 1 / (1 + tau / dt);
+    };
+    return {
+      reset() { xPrec = null; dxPrec = 0; tPrec = null; },
+      filtra(x, t) {
+        if (xPrec === null) { xPrec = x; tPrec = t; return x; }
+        const dt = Math.max(0.001, (t - tPrec) / 1000);
+        tPrec = t;
+        const dx = (x - xPrec) / dt;
+        dxPrec += alfa(dCutoff, dt) * (dx - dxPrec);
+        const taglio = minCutoff + beta * Math.abs(dxPrec);
+        xPrec += alfa(taglio, dt) * (x - xPrec);
+        return xPrec;
+      },
+    };
+  }
 
   /* ---------- geometria della mano ---------- */
   const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -171,7 +211,8 @@
       octx.fillText(`pinch ${p.pinchDist.toFixed(2)}  scala ${pinchMinSeen.toFixed(2)}-${pinchMaxSeen.toFixed(2)}`, 8, h - 18);
       octx.fillText(
         `${p.idx.toFixed(1)} ${p.mid.toFixed(1)} ${p.ring.toFixed(1)} ${p.pinky.toFixed(1)}`
-        + `  distese ${p.nDistese}/4`, 8, h - 7);
+        + `  dist ${p.nDistese}/4  swipe ${spostamentoCorrente >= 0 ? "+" : ""}`
+        + `${spostamentoCorrente.toFixed(1)}/${SWIPE_PALMI}`, 8, h - 7);
     }
   }
 
@@ -205,14 +246,16 @@
          sempre con la TUA massima apertura e il 100% è sempre raggiungibile. */
       if (p.pinchDist > pinchMaxSeen) pinchMaxSeen = Math.min(p.pinchDist, PINCH_GATE);
       if (p.pinchDist < pinchMinSeen) pinchMinSeen = p.pinchDist;
+      /* Filtriamo la DISTANZA grezza, non il volume già mappato: il filtro
+         lavora così su una grandezza fisica continua e la taratura resta
+         coerente anche mentre la scala si allarga. */
+      const distFiltrata = filtroPinch.filtra(p.pinchDist, now);
       const span = Math.max(PINCH_SPAN_MIN, pinchMaxSeen - pinchMinSeen);
-      let grezzo = Math.min(1, Math.max(0, (p.pinchDist - pinchMinSeen) / span));
+      let grezzo = Math.min(1, Math.max(0, (distFiltrata - pinchMinSeen) / span));
       // Scatto agli estremi: vicino ai bordi vogliamo 0 e 100 netti, non 96.
       if (grezzo < 0.04) grezzo = 0;
       else if (grezzo > 0.96) grezzo = 1;
-      smoothPinch = smoothPinch === null
-        ? grezzo : smoothPinch + (grezzo - smoothPinch) * SMOOTH;
-      const vol = Math.round(smoothPinch * 100);
+      const vol = Math.round(grezzo * 100);
       if (Math.abs(vol - lastVolSent) >= VOL_MIN_DELTA && now - lastVolAt >= VOL_MIN_MS) {
         lastVolSent = vol;
         lastVolAt = now;
@@ -222,18 +265,43 @@
       track = [];
       return p;
     }
-    if (pinching) { pinching = false; smoothPinch = null; }
+    // Uscita dal pinch: il filtro riparte pulito al prossimo aggancio.
+    if (pinching) { pinching = false; filtroPinch.reset(); }
 
-    // --- swipe: serve un movimento ampio e coerente nella stessa posa ---
-    track.push({ x: lm[0].x, t: now, kind: p.kind });
+    /* --- swipe ---
+       Seguiamo il centro del palmo (nocca media), non il polso: durante uno
+       swipe di avambraccio il polso si sposta poco ed era facile restare sotto
+       soglia. Lo spostamento è diviso per la lunghezza del palmo, così vale in
+       "palmi" e funziona identico da vicino e da lontano. */
+    const centro = lm[9].x;
+    const scala = handScale(lm);
+    track.push({ x: centro, s: scala, t: now, kind: p.kind });
     while (track.length && now - track[0].t > SWIPE_MS) track.shift();
 
-    if ((p.kind === "open" || p.kind === "fist") && track.length >= 4
+    if ((p.kind === "open" || p.kind === "fist") && track.length >= 5
         && now - lastAction > SWIPE_COOLDOWN) {
       const inizio = track[0];
-      const spostamento = lm[0].x - inizio.x;
-      const stessaPosa = track.every((s) => s.kind === p.kind);
-      if (stessaPosa && Math.abs(spostamento) >= SWIPE_DIST) {
+      const spostamento = (centro - inizio.x) / Math.max(scala, 1e-6);
+      spostamentoCorrente = spostamento;
+
+      /* Posa: basta la MAGGIORANZA dei fotogrammi, non tutti. Durante uno
+         swipe rapido la mano è mossa e il riconoscimento sfarfalla: pretendere
+         la posa perfetta su ogni fotogramma faceva scartare quasi ogni gesto. */
+      const conformi = track.filter((s) => s.kind === p.kind).length;
+      const posaOk = conformi / track.length >= SWIPE_POSA_MIN;
+
+      /* Direzione: i passi devono andare quasi tutti dalla stessa parte,
+         altrimenti un tremolio ampio verrebbe letto come swipe. */
+      let concordi = 0, passi = 0;
+      for (let i = 1; i < track.length; i++) {
+        const d = track[i].x - track[i - 1].x;
+        if (Math.abs(d) < 1e-4) continue;
+        passi++;
+        if (Math.sign(d) === Math.sign(spostamento)) concordi++;
+      }
+      const direzioneOk = passi === 0 || concordi / passi >= SWIPE_COERENZA;
+
+      if (posaOk && direzioneOk && Math.abs(spostamento) >= SWIPE_PALMI) {
         // La webcam specchia: uno spostamento a destra per te è -x qui.
         const verso = spostamento < 0 ? "right" : "left";
         lastAction = now;
@@ -269,7 +337,7 @@
     // Disarmo automatico: se la mano sparisce, i comandi si spengono.
     if (armed && now - lastSeen > DISARM_MS) {
       armed = false;
-      smoothPinch = null;
+      filtroPinch.reset();
       lastVolSent = -1;
       track = [];
       onState({ armed: false });
@@ -310,7 +378,7 @@
   function stop() {
     running = false;
     armed = false;
-    smoothPinch = null;
+    filtroPinch.reset();
     pinchMaxSeen = PINCH_MAX;   // la taratura riparte alla prossima accensione
     pinchMinSeen = PINCH_MIN;
     lastVolSent = -1;

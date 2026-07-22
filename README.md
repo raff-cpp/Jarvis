@@ -167,10 +167,16 @@ una traccia. Se un gesto non scatta, rifallo più ampio.
 persona a persona e con la distanza dalla webcam, quindi la scala si adatta ai
 valori che vede: dopo una prima apertura completa, il 100% è sempre raggiungibile.
 
+**Gli swipe si misurano in lunghezze di palmo**, non in frazioni di inquadratura:
+lo stesso movimento vale uguale da vicino e da lontano. Servono circa **un palmo**
+di corsa, e il riconoscimento tollera che la posa sfarfalli su qualche fotogramma
+(la mano in movimento è sfocata: pretendere la posa perfetta su *ogni* fotogramma
+faceva scartare quasi ogni gesto).
+
 **Numeri di taratura**: sull'anteprima compaiono l'apertura del pinch, la scala
-tarata e quanto è proteso ogni dito (`1.0` = ripiegato, `2.0` = disteso). Servono
-a regolare le soglie sulla mano vera — **clicca sull'anteprima** per nasconderli
-quando non ti servono più.
+tarata, quanto è proteso ogni dito (`1.0` = ripiegato, `2.0` = disteso), quante
+dita risultano distese e la corsa dello swipe in palmi. **Clicca sull'anteprima**
+per nasconderli quando non ti servono più.
 
 > La webcam resta accesa finché l'interruttore è attivo: spegnilo quando non
 > serve, anche perché occupa la camera e le videochiamate non la troverebbero
