@@ -25,8 +25,13 @@
   /* Estensione delle dita, misurata come distanza punta-polso in unità di
      palmo: ~1.0 = ripiegato dentro il palmo, ~2.0 = disteso. È molto più
      robusta del confronto punta/nocca, che confondeva pugno e pinch. */
-  const FOLDED = 1.30;          // sotto questo valore il dito è ripiegato
-  const EXTENDED = 1.70;        // sopra questo valore il dito è disteso
+  const FOLDED = 1.30;          // sotto questo valore il dito è ritirato nel palmo
+  /* Per capire se un dito è DISTESO non si può usare una soglia assoluta uguale
+     per tutti: il mignolo è molto più corto del medio e non la raggiungerebbe
+     mai, quindi la mano aperta non veniva più riconosciuta. Si confronta invece
+     la punta con la nocca intermedia dello stesso dito: è un rapporto, quindi
+     vale identico per il mignolo e per il medio. */
+  const EXT_RATIO = 1.25;
 
   /* Il pinch resta valido fino a PINCH_GATE: deve stare BEN SOPRA il valore
      che corrisponde al volume 100, altrimenti aprendo le dita si esce dalla
@@ -82,12 +87,21 @@
     return dist(lm[0], lm[tip]) / handScale(lm);
   }
 
+  /** Dito disteso: la punta è nettamente più lontana della nocca intermedia
+      dello stesso dito. Rapporto, non soglia assoluta: vale per ogni dito. */
+  function extended(lm, tip, pip) {
+    return reach(lm, tip) > reach(lm, pip) * EXT_RATIO;
+  }
+
   function pose(lm) {
     const idx = reach(lm, 8), mid = reach(lm, 12),
           ring = reach(lm, 16), pinky = reach(lm, 20);
     const media = (idx + mid + ring + pinky) / 4;
     const pinchDist = dist(lm[4], lm[8]) / handScale(lm);
-    const m = { pinchDist, idx, mid, ring, pinky, media };
+    const dist_ = [extended(lm, 8, 6), extended(lm, 12, 10),
+                   extended(lm, 16, 14), extended(lm, 20, 18)];
+    const nDistese = dist_.filter(Boolean).length;
+    const m = { pinchDist, idx, mid, ring, pinky, media, nDistese };
 
     /* 1) PUGNO PER PRIMO. In un pugno il pollice appoggia sull'indice, quindi
           la distanza pollice-indice è piccola: controllando prima il pinch,
@@ -100,15 +114,15 @@
     if (idx < FOLDED && media < FOLDED) return { kind: "fist", ...m };
 
     /* 2) PINCH: l'indice è proteso in avanti (non ritirato come nel pugno),
-          medio e anulare non sono distesi, e il pollice è vicino all'indice. */
-    if (idx > FOLDED && mid < EXTENDED && ring < EXTENDED && pinchDist < PINCH_GATE) {
+          medio e anulare NON sono distesi, e il pollice è vicino all'indice. */
+    if (idx > FOLDED && !dist_[1] && !dist_[2] && pinchDist < PINCH_GATE) {
       return { kind: "pinch", ...m };
     }
 
-    /* 3) MANO APERTA: tutte e quattro distese. */
-    if (idx > EXTENDED && mid > EXTENDED && ring > EXTENDED && pinky > EXTENDED) {
-      return { kind: "open", ...m };
-    }
+    /* 3) MANO APERTA: almeno tre dita distese. Tollerante di proposito —
+          quasi nessuno tiene il mignolo ben teso, e pretenderlo significava
+          non armare mai. */
+    if (nDistese >= 3) return { kind: "open", ...m };
 
     return { kind: "other", ...m };
   }
@@ -157,7 +171,7 @@
       octx.fillText(`pinch ${p.pinchDist.toFixed(2)}  scala ${pinchMinSeen.toFixed(2)}-${pinchMaxSeen.toFixed(2)}`, 8, h - 18);
       octx.fillText(
         `${p.idx.toFixed(1)} ${p.mid.toFixed(1)} ${p.ring.toFixed(1)} ${p.pinky.toFixed(1)}`
-        + `  med ${p.media.toFixed(2)}`, 8, h - 7);
+        + `  distese ${p.nDistese}/4`, 8, h - 7);
     }
   }
 
