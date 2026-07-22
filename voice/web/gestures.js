@@ -90,6 +90,7 @@
   const GRAB_TENUTA_MS = 320;   // quanto tenere il pugno perché conti
   const GRAB_MAX_SPEED = 1.5;   // se la mano corre non è una presa
   const GRAB_COOLDOWN = 1400;   // pausa fra due spostamenti
+  const GRAB_TOLLERANZA_MS = 450; // fotogrammi incerti tollerati senza azzerare
 
   let landmarker = null;
   let stream = null;
@@ -115,6 +116,7 @@
   let spostamentoCorrente = 0;  // swipe in corso, in palmi (per il riscontro)
   let apertaFinoA = 0;          // fino a quando vale "la mano era aperta"
   let pugnoDa = 0;              // da quando il pugno è chiuso
+  let ultimoPugno = 0;          // ultimo fotogramma in cui il pugno era certo
   let armatoDa = 0;             // istante di armamento, per non far scattare subito
   let showNumbers = true;       // riscontro numerico per tarare le soglie
 
@@ -185,15 +187,21 @@
     /* 1) MANO APERTA per prima: è inequivocabile e non va contesa a nessuno. */
     if (nDistese >= 3) return { kind: "open", ...m };
 
-    /* 2) PUGNO: tutte le dita ritirate E nulla che sporga in avanti. */
-    if (media < FOLDED && sporgenza < FIST_SPORGENZA) return { kind: "fist", ...m };
-
-    /* 3) PINCH: indice E pollice nettamente più avanti del medio, medio e
-          anulare non distesi, polpastrelli vicini. */
+    /* 2) PINCH prima del pugno: ora è la SPORGENZA a separarli, e un pugno non
+          ne ha, quindi questo ordine è sicuro e libera il pugno dal doversi
+          difendere. */
     if (sporgenza > PINCH_SPORGENZA && !dist_[1] && !dist_[2]
         && pinchDist < PINCH_GATE) {
       return { kind: "pinch", ...m };
     }
+
+    /* 3) PUGNO: nessun dito disteso e niente che sporga.
+          Prima pretendevo anche `media < 1.30`, una soglia ASSOLUTA: un pugno
+          tenuto un po' lasco, o di taglio rispetto alla webcam, la superava e
+          finiva in "other" — e ogni fotogramma "other" azzerava il conteggio
+          della presa, che così non scattava mai. Il conteggio delle dita distese
+          è un rapporto interno alla mano e non ha quel problema. */
+    if (nDistese <= 1 && sporgenza < FIST_SPORGENZA) return { kind: "fist", ...m };
 
     /* Fra FIST_SPORGENZA e PINCH_SPORGENZA c'è una zona morta voluta: nel
        dubbio non si decide, invece di oscillare fra pugno e pinch. */
@@ -309,6 +317,7 @@
           track = [];
           apertaFinoA = 0;    // serve una NUOVA apertura dopo l'armamento
           pugnoDa = 0;
+          ultimoPugno = 0;
           onState({ armed: true });
         }
       } else {
@@ -347,11 +356,16 @@
     // Uscita dal pinch: il filtro riparte pulito al prossimo aggancio.
     if (pinching) { pinching = false; filtroPinch.reset(); }
 
-    /* --- presa: mano aperta che si chiude -> finestra sull'altro schermo --- */
+    /* --- presa: mano aperta che si chiude -> finestra sull'altro schermo ---
+       Il conteggio del pugno NON viene azzerato da un fotogramma incerto: solo
+       una mano chiaramente aperta lo annulla, oppure l'assenza prolungata del
+       pugno. Prima bastava un singolo "other" — che con la mano ferma capita
+       spesso — per rimettere a zero, e la presa non maturava mai. */
     if (p.kind === "open") {
       apertaFinoA = now + GRAB_APERTA_MS;   // "di recente la mano era aperta"
       pugnoDa = 0;
     } else if (p.kind === "fist") {
+      ultimoPugno = now;
       if (!pugnoDa) pugnoDa = now;
       const dopoApertura = now < apertaFinoA;      // è una chiusura deliberata
       const tenuto = now - pugnoDa >= GRAB_TENUTA_MS;
@@ -369,8 +383,8 @@
         onState({ armed: true, hint: "finestra sull'altro schermo" });
         return p;
       }
-    } else {
-      pugnoDa = 0;
+    } else if (now - ultimoPugno > GRAB_TOLLERANZA_MS) {
+      pugnoDa = 0;                          // pugno davvero abbandonato
     }
 
     /* --- swipe (solo mano aperta: tracce musicali) ---
@@ -438,6 +452,7 @@
       filtroPinch.reset();
       apertaFinoA = 0;
       pugnoDa = 0;
+      ultimoPugno = 0;
       lastVolSent = -1;
       track = [];
       onState({ armed: false });
@@ -481,6 +496,7 @@
     filtroPinch.reset();
     apertaFinoA = 0;
     pugnoDa = 0;
+    ultimoPugno = 0;
     pinchMaxSeen = PINCH_MAX;   // la taratura riparte alla prossima accensione
     pinchMinSeen = PINCH_MIN;
     lastVolSent = -1;
