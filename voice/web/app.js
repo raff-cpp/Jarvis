@@ -615,6 +615,12 @@
     else stopGestures();
   });
 
+  // Click sull'anteprima: mostra/nasconde i numeri di taratura.
+  camWrap.addEventListener("click", () => {
+    const attivi = window.JarvisGestures.toggleNumbers();
+    camState.textContent = attivi ? "numeri visibili" : "numeri nascosti";
+  });
+
   // Ripristina la scelta, ma solo dopo un gesto dell'utente: il browser non
   // concede la webcam senza interazione.
   if (localStorage.getItem(GEST_KEY) === "1") {

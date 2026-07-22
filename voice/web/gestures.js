@@ -18,11 +18,26 @@
   const MODEL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker" +
                 "/hand_landmarker/float16/1/hand_landmarker.task";
 
-  /* --- Soglie: tarate per stare larghi sui falsi positivi --- */
+  /* --- Soglie --- */
   const ARM_HOLD_MS = 600;      // quanto tenere il palmo aperto per armare
   const DISARM_MS = 4000;       // inattività dopo cui si disarma da solo
-  const PINCH_MIN = 0.10;       // distanza pollice-indice = volume 0
-  const PINCH_MAX = 0.65;       // distanza pollice-indice = volume 100
+
+  /* Estensione delle dita, misurata come distanza punta-polso in unità di
+     palmo: ~1.0 = ripiegato dentro il palmo, ~2.0 = disteso. È molto più
+     robusta del confronto punta/nocca, che confondeva pugno e pinch. */
+  const FOLDED = 1.30;          // sotto questo valore il dito è ripiegato
+  const EXTENDED = 1.70;        // sopra questo valore il dito è disteso
+
+  /* Il pinch resta valido fino a PINCH_GATE: deve stare BEN SOPRA il valore
+     che corrisponde al volume 100, altrimenti aprendo le dita si esce dalla
+     posa prima di arrivare in fondo alla scala (era il bug del "non supera il 38%"). */
+  const PINCH_GATE = 0.90;      // oltre questa apertura non è più un pinch
+  /* La scala del volume si TARA DA SOLA sulla mano di chi la usa: parte
+     stretta e si allarga ai valori davvero osservati. Partire larghi era il
+     difetto: se la tua mano apriva meno del previsto, il 100% non arrivava mai. */
+  const PINCH_MIN = 0.10;       // punto di partenza per "dita unite"
+  const PINCH_MAX = 0.28;       // punto di partenza per "dita aperte", volutamente basso
+  const PINCH_SPAN_MIN = 0.12;  // corsa minima, per non renderlo ipersensibile
   const SMOOTH = 0.35;          // filtro sul tremolio (0 = fermo, 1 = nessun filtro)
   const VOL_MIN_DELTA = 2;      // non inviare variazioni impercettibili
   const VOL_MIN_MS = 90;        // né più di ~11 aggiornamenti al secondo
@@ -45,10 +60,13 @@
   let lastSeen = 0;
   let lastAction = 0;
   let smoothPinch = null;
+  let pinchMaxSeen = PINCH_MAX;   // estremi osservati: la scala si tara sulla mano
+  let pinchMinSeen = PINCH_MIN;
   let lastVolSent = -1;
   let lastVolAt = 0;
   let track = [];               // storico posizione polso: {x, t, pose}
   let pinching = false;
+  let showNumbers = true;       // riscontro numerico per tarare le soglie
 
   /* ---------- geometria della mano ---------- */
   const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -59,25 +77,40 @@
     return Math.max(dist(lm[0], lm[9]), 1e-6);
   }
 
-  /** Un dito è teso se la punta è più lontana dal polso della nocca centrale. */
-  function fingerOut(lm, tip, pip) {
-    return dist(lm[0], lm[tip]) > dist(lm[0], lm[pip]) * 1.12;
+  /** Quanto un dito è proteso: distanza punta-polso in unità di palmo. */
+  function reach(lm, tip) {
+    return dist(lm[0], lm[tip]) / handScale(lm);
   }
 
   function pose(lm) {
-    const fingers = [fingerOut(lm, 8, 6), fingerOut(lm, 12, 10),
-                     fingerOut(lm, 16, 14), fingerOut(lm, 20, 18)];
-    const out = fingers.filter(Boolean).length;
+    const idx = reach(lm, 8), mid = reach(lm, 12),
+          ring = reach(lm, 16), pinky = reach(lm, 20);
+    const media = (idx + mid + ring + pinky) / 4;
     const pinchDist = dist(lm[4], lm[8]) / handScale(lm);
+    const m = { pinchDist, idx, mid, ring, pinky, media };
 
-    // Pinch: pollice e indice vicini, medio/anulare/mignolo ripiegati.
-    // Il controllo sulle altre dita evita che una mano aperta a riposo,
-    // con pollice e indice casualmente vicini, diventi un pinch.
-    const closedOthers = !fingers[1] && !fingers[2];
-    if (pinchDist < 0.32 && closedOthers) return { kind: "pinch", pinchDist };
-    if (out === 4) return { kind: "open", pinchDist };
-    if (out === 0) return { kind: "fist", pinchDist };
-    return { kind: "other", pinchDist };
+    /* 1) PUGNO PER PRIMO. In un pugno il pollice appoggia sull'indice, quindi
+          la distanza pollice-indice è piccola: controllando prima il pinch,
+          ogni pugno finiva nel ramo pinch e il pugno non si vedeva quasi mai.
+
+          Il discriminante vero fra pugno e pinch è L'INDICE: ritirato nel
+          pugno, proteso in avanti nel pinch. La sola media delle quattro dita
+          non basta — in un pinch le altre tre sono ripiegate e la trascinano
+          sotto soglia, facendo passare ogni pinch per un pugno. */
+    if (idx < FOLDED && media < FOLDED) return { kind: "fist", ...m };
+
+    /* 2) PINCH: l'indice è proteso in avanti (non ritirato come nel pugno),
+          medio e anulare non sono distesi, e il pollice è vicino all'indice. */
+    if (idx > FOLDED && mid < EXTENDED && ring < EXTENDED && pinchDist < PINCH_GATE) {
+      return { kind: "pinch", ...m };
+    }
+
+    /* 3) MANO APERTA: tutte e quattro distese. */
+    if (idx > EXTENDED && mid > EXTENDED && ring > EXTENDED && pinky > EXTENDED) {
+      return { kind: "open", ...m };
+    }
+
+    return { kind: "other", ...m };
   }
 
   /* ---------- disegno del riscontro visivo ---------- */
@@ -85,11 +118,12 @@
                  [10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[17,18],
                  [18,19],[19,20],[0,17]];
 
-  function draw(lm, kind) {
+  function draw(lm, p) {
     if (!octx) return;
     const w = overlay.width, h = overlay.height;
     octx.clearRect(0, 0, w, h);
     if (!lm) return;
+    const kind = p ? p.kind : null;
     const colore = armed ? (getComputedStyle(document.body)
                             .getPropertyValue("--glow").trim() || "#35e0ff")
                          : "rgba(150,170,180,.55)";
@@ -110,9 +144,20 @@
       octx.arc(X(p), Y(p), 3, 0, Math.PI * 2);
       octx.fill();
     }
-    if (kind && armed) {
+    if (kind) {
       octx.font = "11px Consolas, monospace";
       octx.fillText(kind.toUpperCase(), 8, 16);
+    }
+    /* Riscontro numerico: serve a tarare le soglie sulla mano vera invece che
+       a stima. Sono le stesse grandezze usate da pose(): apertura del pinch e
+       quanto è proteso ogni dito (1.0 = ripiegato, 2.0 = disteso). */
+    if (p && showNumbers) {
+      octx.font = "9px Consolas, monospace";
+      octx.fillStyle = "rgba(255,255,255,.85)";
+      octx.fillText(`pinch ${p.pinchDist.toFixed(2)}  scala ${pinchMinSeen.toFixed(2)}-${pinchMaxSeen.toFixed(2)}`, 8, h - 18);
+      octx.fillText(
+        `${p.idx.toFixed(1)} ${p.mid.toFixed(1)} ${p.ring.toFixed(1)} ${p.pinky.toFixed(1)}`
+        + `  med ${p.media.toFixed(2)}`, 8, h - 7);
     }
   }
 
@@ -134,14 +179,23 @@
       } else {
         openSince = 0;
       }
-      return p.kind;
+      return p;
     }
 
     // --- pinch: volume continuo ---
     if (p.kind === "pinch") {
       pinching = true;
-      const grezzo = Math.min(1, Math.max(0,
-        (p.pinchDist - PINCH_MIN) / (PINCH_MAX - PINCH_MIN)));
+      /* Taratura automatica in ENTRAMBE le direzioni: quanto apre la mano
+         cambia da persona a persona e con la distanza dalla webcam. La scala
+         si allarga ai valori realmente visti, così il fondo scala coincide
+         sempre con la TUA massima apertura e il 100% è sempre raggiungibile. */
+      if (p.pinchDist > pinchMaxSeen) pinchMaxSeen = Math.min(p.pinchDist, PINCH_GATE);
+      if (p.pinchDist < pinchMinSeen) pinchMinSeen = p.pinchDist;
+      const span = Math.max(PINCH_SPAN_MIN, pinchMaxSeen - pinchMinSeen);
+      let grezzo = Math.min(1, Math.max(0, (p.pinchDist - pinchMinSeen) / span));
+      // Scatto agli estremi: vicino ai bordi vogliamo 0 e 100 netti, non 96.
+      if (grezzo < 0.04) grezzo = 0;
+      else if (grezzo > 0.96) grezzo = 1;
       smoothPinch = smoothPinch === null
         ? grezzo : smoothPinch + (grezzo - smoothPinch) * SMOOTH;
       const vol = Math.round(smoothPinch * 100);
@@ -152,7 +206,7 @@
         onState({ armed: true, hint: `volume ${vol}%` });
       }
       track = [];
-      return "pinch";
+      return p;
     }
     if (pinching) { pinching = false; smoothPinch = null; }
 
@@ -180,21 +234,21 @@
         }
       }
     }
-    return p.kind;
+    return p;
   }
 
   /* ---------- ciclo principale ---------- */
   function loop() {
     if (!running) return;
     const now = performance.now();
-    let kind = null;
+    let misure = null;
     let lm = null;
     if (video.readyState >= 2) {
       try {
         const res = landmarker.detectForVideo(video, now);
         if (res && res.landmarks && res.landmarks.length) {
           lm = res.landmarks[0];
-          kind = classify(lm, now);
+          misure = classify(lm, now);
         }
       } catch (e) { /* fotogramma saltato: non è un problema */ }
     }
@@ -206,7 +260,7 @@
       track = [];
       onState({ armed: false });
     }
-    draw(lm, kind);
+    draw(lm, misure);
     requestAnimationFrame(loop);
   }
 
@@ -243,6 +297,8 @@
     running = false;
     armed = false;
     smoothPinch = null;
+    pinchMaxSeen = PINCH_MAX;   // la taratura riparte alla prossima accensione
+    pinchMinSeen = PINCH_MIN;
     lastVolSent = -1;
     track = [];
     if (stream) {
@@ -253,5 +309,11 @@
     if (octx) octx.clearRect(0, 0, overlay.width, overlay.height);
   }
 
-  window.JarvisGestures = { start, stop, isRunning: () => running };
+  /** Mostra o nasconde i numeri di taratura sull'anteprima. */
+  function toggleNumbers() {
+    showNumbers = !showNumbers;
+    return showNumbers;
+  }
+
+  window.JarvisGestures = { start, stop, toggleNumbers, isRunning: () => running };
 })();
