@@ -224,7 +224,11 @@ function Move-JvWindow($dir) {
     $b = $screens[$i].Bounds
     if ($cx -ge $b.X -and $cx -lt ($b.X + $b.Width)) { $cur = $i }
   }
-  $t = if ($dir -eq 'right') { $cur + 1 } else { $cur - 1 }
+  # 'other' = lo schermo successivo a giro: con due monitor e' semplicemente
+  # "l'altro", senza bisogno di indicare una direzione.
+  if ($dir -eq 'other') { $t = ($cur + 1) % $screens.Count }
+  elseif ($dir -eq 'right') { $t = $cur + 1 }
+  else { $t = $cur - 1 }
   if ($t -lt 0 -or $t -ge $screens.Count) { return }
   # Una finestra massimizzata va prima ripristinata, spostata e poi rimassimizzata.
   $max = [JvWin]::IsZoomed($h)
@@ -610,14 +614,24 @@ def set_volume(level=None, delta=None, mute=None):
 
 
 def window_to_monitor(direction):
-    """Sposta la finestra attiva sullo schermo a sinistra o a destra."""
+    """Sposta la finestra attiva su un altro schermo.
+
+    direction: 'left', 'right', oppure 'other' per l'altro schermo (con due
+    monitor non serve indicare un verso: e' semplicemente quello opposto).
+    """
     d = (direction or "").strip().lower()
-    if d not in ("left", "right", "sinistra", "destra"):
-        return _err("Direzione non valida: usa left o right.")
-    verso = "right" if d in ("right", "destra") else "left"
-    if _worker.send(f"Move-JvWindow '{verso}'"):
-        return _ok(message=f"Finestra spostata verso {'destra' if verso == 'right' else 'sinistra'}.")
-    return _err("Spostamento non riuscito.")
+    mappa = {"left": "left", "sinistra": "left",
+             "right": "right", "destra": "right",
+             "other": "other", "altro": "other", "toggle": "other"}
+    verso = mappa.get(d)
+    if not verso:
+        return _err("Direzione non valida: usa left, right oppure other.")
+    if not _worker.send(f"Move-JvWindow '{verso}'"):
+        return _err("Spostamento non riuscito.")
+    testo = {"left": "Finestra spostata a sinistra.",
+             "right": "Finestra spostata a destra.",
+             "other": "Finestra spostata sull'altro schermo."}[verso]
+    return _ok(message=testo)
 
 
 def media_control(action):

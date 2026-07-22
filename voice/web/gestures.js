@@ -9,7 +9,7 @@
      palmo aperto tenuto fermo   -> arma i comandi
      pinch pollice-indice        -> volume (continuo, come una manopola)
      mano aperta, swipe L/R      -> traccia precedente / successiva
-     pugno chiuso, swipe L/R     -> sposta la finestra sull'altro schermo
+     mano aperta che si chiude   -> finestra sull'altro schermo
 */
 (() => {
   "use strict";
@@ -80,6 +80,17 @@
   const SWIPE_POSA_MIN = 0.6;   // frazione di fotogrammi che deve avere la posa giusta
   const SWIPE_COERENZA = 0.7;   // frazione di passi che deve andare nella stessa direzione
 
+  /* "Presa": mano aperta che si CHIUDE -> la finestra passa all'altro schermo.
+     Sostituisce lo swipe a pugno, che era il gesto meno affidabile: uno swipe
+     richiede movimento, il movimento sfoca l'immagine e proprio lì il
+     riconoscimento sbagliava. Chiudere la mano è invece una transizione di
+     stato, ferma: molto più netta da leggere. Con due schermi non serve nemmeno
+     indicare un verso, "l'altro" è univoco. */
+  const GRAB_APERTA_MS = 1200;  // quanto resta valida l'apertura che precede
+  const GRAB_TENUTA_MS = 320;   // quanto tenere il pugno perché conti
+  const GRAB_MAX_SPEED = 1.5;   // se la mano corre non è una presa
+  const GRAB_COOLDOWN = 1400;   // pausa fra due spostamenti
+
   let landmarker = null;
   let stream = null;
   let running = false;
@@ -102,6 +113,9 @@
   let track = [];               // storico posizione del palmo: {x, s, t, kind}
   let pinching = false;
   let spostamentoCorrente = 0;  // swipe in corso, in palmi (per il riscontro)
+  let apertaFinoA = 0;          // fino a quando vale "la mano era aperta"
+  let pugnoDa = 0;              // da quando il pugno è chiuso
+  let armatoDa = 0;             // istante di armamento, per non far scattare subito
   let showNumbers = true;       // riscontro numerico per tarare le soglie
 
   /* ---------- filtro "One Euro" ----------
@@ -290,8 +304,11 @@
         if (!openSince) openSince = now;
         if (now - openSince >= ARM_HOLD_MS) {
           armed = true;
+          armatoDa = now;
           openSince = 0;
           track = [];
+          apertaFinoA = 0;    // serve una NUOVA apertura dopo l'armamento
+          pugnoDa = 0;
           onState({ armed: true });
         }
       } else {
@@ -330,7 +347,33 @@
     // Uscita dal pinch: il filtro riparte pulito al prossimo aggancio.
     if (pinching) { pinching = false; filtroPinch.reset(); }
 
-    /* --- swipe ---
+    /* --- presa: mano aperta che si chiude -> finestra sull'altro schermo --- */
+    if (p.kind === "open") {
+      apertaFinoA = now + GRAB_APERTA_MS;   // "di recente la mano era aperta"
+      pugnoDa = 0;
+    } else if (p.kind === "fist") {
+      if (!pugnoDa) pugnoDa = now;
+      const dopoApertura = now < apertaFinoA;      // è una chiusura deliberata
+      const tenuto = now - pugnoDa >= GRAB_TENUTA_MS;
+      const fermo = velocita(now) <= GRAB_MAX_SPEED;
+      /* Appena armato la mano è ancora aperta: se la si abbassa per riposare,
+         la chiusura non deve valere come comando. */
+      const armatoDaAbbastanza = now - armatoDa > 700;
+      if (dopoApertura && tenuto && fermo && armatoDaAbbastanza
+          && now - lastAction > GRAB_COOLDOWN) {
+        lastAction = now;
+        apertaFinoA = 0;                          // serve riaprire per rifarlo
+        pugnoDa = 0;
+        track = [];
+        onEvent({ action: "window", value: "other" });
+        onState({ armed: true, hint: "finestra sull'altro schermo" });
+        return p;
+      }
+    } else {
+      pugnoDa = 0;
+    }
+
+    /* --- swipe (solo mano aperta: tracce musicali) ---
        Il tracciato segue il centro del palmo (nocca media), non il polso:
        durante uno swipe di avambraccio il polso si sposta poco ed era facile
        restare sotto soglia. Lo spostamento è in "palmi", quindi vale identico
@@ -338,7 +381,7 @@
     const centro = lm[9].x;
     const scala = handScale(lm);
 
-    if ((p.kind === "open" || p.kind === "fist") && track.length >= 5
+    if (p.kind === "open" && track.length >= 5
         && now - lastAction > SWIPE_COOLDOWN) {
       const inizio = track[0];
       const spostamento = (centro - inizio.x) / Math.max(scala, 1e-6);
@@ -366,14 +409,9 @@
         const verso = spostamento < 0 ? "right" : "left";
         lastAction = now;
         track = [];
-        if (p.kind === "open") {
-          const v = verso === "right" ? "next" : "previous";
-          onEvent({ action: "media", value: v });
-          onState({ armed: true, hint: v === "next" ? "traccia avanti" : "traccia indietro" });
-        } else {
-          onEvent({ action: "window", value: verso });
-          onState({ armed: true, hint: `finestra a ${verso === "right" ? "destra" : "sinistra"}` });
-        }
+        const v = verso === "right" ? "next" : "previous";
+        onEvent({ action: "media", value: v });
+        onState({ armed: true, hint: v === "next" ? "traccia avanti" : "traccia indietro" });
       }
     }
     return p;
@@ -398,6 +436,8 @@
     if (armed && now - lastSeen > DISARM_MS) {
       armed = false;
       filtroPinch.reset();
+      apertaFinoA = 0;
+      pugnoDa = 0;
       lastVolSent = -1;
       track = [];
       onState({ armed: false });
@@ -439,6 +479,8 @@
     running = false;
     armed = false;
     filtroPinch.reset();
+    apertaFinoA = 0;
+    pugnoDa = 0;
     pinchMaxSeen = PINCH_MAX;   // la taratura riparte alla prossima accensione
     pinchMinSeen = PINCH_MIN;
     lastVolSent = -1;

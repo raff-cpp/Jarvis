@@ -164,7 +164,12 @@ disarma da solo.
 |---|---|
 | **Pinch** pollice-indice (altre dita chiuse) | volume, come una manopola |
 | **Mano aperta**, swipe ← / → | traccia precedente / successiva |
-| **Pugno chiuso**, swipe ← / → | sposta la finestra sull'altro schermo |
+| **Chiudi la mano** a pugno e tienila | finestra sull'altro schermo |
+
+Lo spostamento finestra **non è più uno swipe**: chiudere la mano è una
+transizione di stato, non un movimento, quindi non soffre della sfocatura che
+rendeva instabile il gesto precedente. E con due schermi non serve indicare un
+verso — «l'altro» è univoco. Per rifarlo, riapri la mano e richiudila.
 
 Le stesse azioni restano disponibili a voce (*«sposta la finestra a destra»*).
 
