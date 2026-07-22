@@ -240,18 +240,23 @@
     speak("Sono a sua disposizione, signore.");   // anteprima immediata
   });
 
-  function onSpeakStart(text) {
-    speaking = true;
-    setState("speaking");
-    caption.textContent = text;
-  }
-  function onSpeakEnd() {
+  /* Ogni frase ha un numero progressivo: se ne arriva una nuova, quelle
+     ancora in volo vengono scartate invece di sovrapporsi. */
+  let speechGen = 0;
+  const ECHO_COOLDOWN_MS = 550;   // pausa dopo la voce, prima di riascoltare
+
+  function onSpeakEnd(gen) {
+    if (gen !== speechGen) return;      // sorpassata da una frase più recente
     speaking = false;
-    if (!processing) goIdle();
+    // Piccola attesa: la coda dell'audio e il riverbero non devono finire
+    // dentro il microfono e farsi trascrivere come un comando.
+    setTimeout(() => {
+      if (gen === speechGen && !speaking && !processing) goIdle();
+    }, ECHO_COOLDOWN_MS);
   }
 
   /* Voce neurale dal server: ritorna true se è riuscita a partire. */
-  async function speakServer(text, voiceId) {
+  async function speakServer(text, voiceId, gen) {
     let url = null;
     try {
       const r = await fetch("/api/tts", {
@@ -260,14 +265,15 @@
         body: JSON.stringify({ text, voice: voiceId }),
       });
       if (!r.ok) return false;
-      url = URL.createObjectURL(await r.blob());
+      const blob = await r.blob();
+      if (gen !== speechGen) return true;   // nel frattempo è arrivata altra voce
+      url = URL.createObjectURL(blob);
       const audio = new Audio(url);
       currentAudio = audio;
-      audio.onplay = () => onSpeakStart(text);
       audio.onended = audio.onerror = () => {
         URL.revokeObjectURL(url);
         if (currentAudio === audio) currentAudio = null;
-        onSpeakEnd();
+        onSpeakEnd(gen);
       };
       await audio.play();       // può fallire se l'autoplay è bloccato
       return true;
@@ -278,29 +284,42 @@
     }
   }
 
-  function speakBrowser(text) {
-    if (!("speechSynthesis" in window)) { onSpeakEnd(); return; }
+  function speakBrowser(text, gen) {
+    if (!("speechSynthesis" in window)) { onSpeakEnd(gen); return; }
     speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
     if (voice) { u.voice = voice; u.lang = voice.lang; }
     else u.lang = "it-IT";
     u.rate = RATE;
     u.pitch = PITCH;
-    u.onstart = () => onSpeakStart(text);
-    u.onend = u.onerror = onSpeakEnd;
+    u.onend = u.onerror = () => onSpeakEnd(gen);
     speechSynthesis.speak(u);
   }
 
   async function speak(text) {
-    stopListen();               // evita che il microfono risenta la voce di Jarvis
+    const gen = ++speechGen;
+
+    /* Marchiamo "sta parlando" SUBITO, non quando parte l'audio: fra la
+       richiesta al server e il primo campione passa quasi un secondo, e in
+       quella finestra il messaggio "done" riaccenderebbe il microfono. Jarvis
+       si risentirebbe da solo e finirebbe in loop. */
+    speaking = true;
+    disarm();                   // una parola d'attivazione non deve sopravvivere alla risposta
+    stopListen();               // microfono spento mentre parla
+    rememberSpoken(text);       // per riconoscere la propria eco
+    setState("speaking");
+    caption.textContent = text;
+
     if (selected && selected.kind === "server") {
-      if (await speakServer(text, selected.id)) return;
+      if (await speakServer(text, selected.id, gen)) return;
+      if (gen !== speechGen) return;   // sorpassata mentre attendevamo il server
       // Server muto (rete assente, autoplay bloccato): ripiego sul browser.
     }
-    speakBrowser(text);
+    speakBrowser(text, gen);
   }
 
   function shutUp() {
+    speechGen++;                // invalida le frasi ancora in volo
     if (currentAudio) {
       try { currentAudio.pause(); } catch (e) { /* gia fermo */ }
       currentAudio = null;
@@ -357,6 +376,57 @@
     caption.textContent = "Riconoscimento vocale non disponibile. Usa il campo di testo.";
   }
 
+  /* ---------- Filtro anti-eco ----------
+     Ultima difesa: se l'audio di Jarvis rientra nel microfono (casse alte,
+     cuffie aperte, ritardo di spegnimento), la trascrizione somiglia molto a
+     quello che ha appena detto. In quel caso la scartiamo invece di trattarla
+     come un comando: senza questo, ogni risposta ne innesca un'altra. */
+  const spokenHistory = [];
+  const ECHO_MEMORY_MS = 20000;
+
+  function normalizeText(s) {
+    return (s || "")
+      .toLowerCase()
+      .normalize("NFD").replace(/[̀-ͯ]/g, "")   // via gli accenti
+      .replace(/[^a-z0-9\s]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function rememberSpoken(text) {
+    const norm = normalizeText(text);
+    if (norm) spokenHistory.push({ norm, t: Date.now() });
+    while (spokenHistory.length > 8) spokenHistory.shift();
+  }
+
+  function isEcho(text) {
+    const norm = normalizeText(text);
+    if (!norm) return false;
+    const words = norm.split(" ").filter(Boolean);
+    if (!words.length) return false;
+    const now = Date.now();
+    for (const past of spokenHistory) {
+      if (now - past.t > ECHO_MEMORY_MS) continue;
+
+      /* Contenimento: la trascrizione è un pezzo di ciò che Jarvis ha detto.
+         Solo su frasi non banali: sotto i 15 caratteri un "sono" o un "va bene"
+         scatterebbe su comandi legittimi. */
+      if (norm.length >= 15 && (past.norm.includes(norm) || norm.includes(past.norm))) {
+        return true;
+      }
+
+      /* Sovrapposizione lessicale: solo su frasi lunghe. Su un comando corto
+         come "che ore sono" bastavano due parole comuni ("che", "sono") per
+         superare la soglia e farlo scartare per errore. */
+      if (words.length >= 6) {
+        const vocab = new Set(past.norm.split(" "));
+        const shared = words.filter((w) => vocab.has(w)).length;
+        if (shared / words.length >= 0.7) return true;
+      }
+    }
+    return false;
+  }
+
   function needsWake() {
     // La parola d'attivazione serve solo in ascolto continuo e se non siamo gia "armati".
     return continuousBox.checked && wakeBox.checked && !armed;
@@ -377,6 +447,9 @@
   }
 
   function handleFinal(transcript) {
+    // Jarvis che risente se stesso: ignora, altrimenti si autoalimenta.
+    if (isEcho(transcript)) return;
+    if (speaking || processing) return;   // niente comandi mentre parla o elabora
     if (!needsWake()) {
       sendCommand(transcript);
       return;
