@@ -182,10 +182,22 @@ di corsa, e il riconoscimento tollera che la posa sfarfalli su qualche fotogramm
 (la mano in movimento è sfocata: pretendere la posa perfetta su *ogni* fotogramma
 faceva scartare quasi ogni gesto).
 
-**Numeri di taratura**: sull'anteprima compaiono l'apertura del pinch, la scala
-tarata, quanto è proteso ogni dito (`1.0` = ripiegato, `2.0` = disteso), quante
-dita risultano distese e la corsa dello swipe in palmi. **Clicca sull'anteprima**
-per nasconderli quando non ti servono più.
+**Pugno e pinch non si confondono più.** Non sono distinti da una soglia secca —
+che con la mano in movimento oscillava, facendo partire il volume durante uno
+swipe a pugno chiuso — ma da quanto indice e pollice *sporgono oltre il medio*:
+quasi zero nel pugno, netta nel pinch. Il pinch inoltre si aggancia solo a mano
+ferma e dopo un decimo di secondo, perché è l'unico gesto con effetto continuo.
+
+**Numeri di taratura** sull'anteprima:
+
+| Valore | Cosa dice |
+|---|---|
+| `pinch` | apertura attuale delle dita, e la scala tarata sulla tua mano |
+| `sporg` | separa pugno e pinch: sotto `0.12` pugno, sopra `0.25` pinch |
+| `dita` | quante risultano distese (ne bastano 3 per armare) |
+| `swipe` | corsa attuale in palmi, rispetto a quella richiesta |
+
+**Clicca sull'anteprima** per nasconderli quando non ti servono più.
 
 > La webcam resta accesa finché l'interruttore è attivo: spegnilo quando non
 > serve, anche perché occupa la camera e le videochiamate non la troverebbero

@@ -33,6 +33,25 @@
      vale identico per il mignolo e per il medio. */
   const EXT_RATIO = 1.25;
 
+  /* Pugno contro pinch — il confine più delicato di tutti.
+     Una soglia assoluta sull'indice era un precipizio: 1.29 = pugno, 1.31 =
+     pinch, e con la mano in movimento la misura oscilla proprio lì. Risultato:
+     durante uno swipe a pugno chiuso partiva il controllo del volume.
+
+     Qui il confronto è RELATIVO fra dita della stessa mano: nel pugno indice e
+     medio sono ripiegati insieme (differenza quasi nulla), nel pinch l'indice e
+     il pollice sono protesi in avanti mentre il medio resta giù. Non dipende da
+     quanto è grande la mano né da quanto è lontana la webcam. Fra le due soglie
+     c'è una zona morta in cui non si decide nulla. */
+  const PINCH_SPORGENZA = 0.25;   // quanto indice+pollice devono superare il medio
+  const FIST_SPORGENZA = 0.12;    // sotto questo valore le dita sono tutte insieme
+
+  /* Protezioni temporali: una posa vale solo se REGGE per un po', e il pinch
+     non può attivarsi mentre la mano corre (quello è uno swipe, non una
+     manopola). Entrambe servono a non farsi ingannare dai fotogrammi sfocati. */
+  const POSE_STABLE_MS = 130;     // quanto una posa deve durare per contare
+  const PINCH_MAX_SPEED = 1.2;    // palmi al secondo oltre cui il pinch è escluso
+
   /* Il pinch resta valido fino a PINCH_GATE: deve stare BEN SOPRA il valore
      che corrisponde al volume 100, altrimenti aprendo le dita si esce dalla
      posa prima di arrivare in fondo alla scala (era il bug del "non supera il 38%"). */
@@ -55,7 +74,7 @@
 
   /* Swipe misurato in LUNGHEZZE DI PALMO, non in frazioni di inquadratura:
      così la stessa gesticolata funziona uguale da vicino e da lontano. */
-  const SWIPE_PALMI = 1.0;      // quanto deve viaggiare la mano
+  const SWIPE_PALMI = 0.85;     // quanto deve viaggiare la mano
   const SWIPE_MS = 500;         // finestra temporale dello swipe
   const SWIPE_COOLDOWN = 900;   // pausa fra due gesti discreti
   const SWIPE_POSA_MIN = 0.6;   // frazione di fotogrammi che deve avere la posa giusta
@@ -136,34 +155,34 @@
   function pose(lm) {
     const idx = reach(lm, 8), mid = reach(lm, 12),
           ring = reach(lm, 16), pinky = reach(lm, 20);
+    const thumb = reach(lm, 4);
     const media = (idx + mid + ring + pinky) / 4;
     const pinchDist = dist(lm[4], lm[8]) / handScale(lm);
     const dist_ = [extended(lm, 8, 6), extended(lm, 12, 10),
                    extended(lm, 16, 14), extended(lm, 20, 18)];
     const nDistese = dist_.filter(Boolean).length;
-    const m = { pinchDist, idx, mid, ring, pinky, media, nDistese };
 
-    /* 1) PUGNO PER PRIMO. In un pugno il pollice appoggia sull'indice, quindi
-          la distanza pollice-indice è piccola: controllando prima il pinch,
-          ogni pugno finiva nel ramo pinch e il pugno non si vedeva quasi mai.
+    /* Quanto indice e pollice sporgono OLTRE il medio. È la grandezza che
+       separa davvero il pugno dal pinch, ed è un confronto interno alla mano:
+       non cambia con la taglia della mano né con la distanza dalla webcam. */
+    const sporgenza = Math.min(idx, thumb) - mid;
+    const m = { pinchDist, idx, mid, ring, pinky, thumb, media, nDistese, sporgenza };
 
-          Il discriminante vero fra pugno e pinch è L'INDICE: ritirato nel
-          pugno, proteso in avanti nel pinch. La sola media delle quattro dita
-          non basta — in un pinch le altre tre sono ripiegate e la trascinano
-          sotto soglia, facendo passare ogni pinch per un pugno. */
-    if (idx < FOLDED && media < FOLDED) return { kind: "fist", ...m };
+    /* 1) MANO APERTA per prima: è inequivocabile e non va contesa a nessuno. */
+    if (nDistese >= 3) return { kind: "open", ...m };
 
-    /* 2) PINCH: l'indice è proteso in avanti (non ritirato come nel pugno),
-          medio e anulare NON sono distesi, e il pollice è vicino all'indice. */
-    if (idx > FOLDED && !dist_[1] && !dist_[2] && pinchDist < PINCH_GATE) {
+    /* 2) PUGNO: tutte le dita ritirate E nulla che sporga in avanti. */
+    if (media < FOLDED && sporgenza < FIST_SPORGENZA) return { kind: "fist", ...m };
+
+    /* 3) PINCH: indice E pollice nettamente più avanti del medio, medio e
+          anulare non distesi, polpastrelli vicini. */
+    if (sporgenza > PINCH_SPORGENZA && !dist_[1] && !dist_[2]
+        && pinchDist < PINCH_GATE) {
       return { kind: "pinch", ...m };
     }
 
-    /* 3) MANO APERTA: almeno tre dita distese. Tollerante di proposito —
-          quasi nessuno tiene il mignolo ben teso, e pretenderlo significava
-          non armare mai. */
-    if (nDistese >= 3) return { kind: "open", ...m };
-
+    /* Fra FIST_SPORGENZA e PINCH_SPORGENZA c'è una zona morta voluta: nel
+       dubbio non si decide, invece di oscillare fra pugno e pinch. */
     return { kind: "other", ...m };
   }
 
@@ -209,17 +228,61 @@
       octx.font = "9px Consolas, monospace";
       octx.fillStyle = "rgba(255,255,255,.85)";
       octx.fillText(`pinch ${p.pinchDist.toFixed(2)}  scala ${pinchMinSeen.toFixed(2)}-${pinchMaxSeen.toFixed(2)}`, 8, h - 18);
+      // "sporg" e' il numero che separa pugno e pinch: sotto 0.12 pugno,
+      // sopra 0.25 pinch, in mezzo zona morta.
       octx.fillText(
-        `${p.idx.toFixed(1)} ${p.mid.toFixed(1)} ${p.ring.toFixed(1)} ${p.pinky.toFixed(1)}`
-        + `  dist ${p.nDistese}/4  swipe ${spostamentoCorrente >= 0 ? "+" : ""}`
+        `sporg ${p.sporgenza.toFixed(2)}  dita ${p.nDistese}/4`
+        + `  swipe ${spostamentoCorrente >= 0 ? "+" : ""}`
         + `${spostamentoCorrente.toFixed(1)}/${SWIPE_PALMI}`, 8, h - 7);
     }
   }
 
+  /* ---------- aggancio del pinch ----------
+     Solo il pinch ha bisogno di essere "meritato": è l'unico gesto continuo,
+     quindi un lampo sbagliato muove subito il volume. Deve quindi durare un
+     minimo E avvenire a mano ferma.
+
+     Gli altri gesti passano invece SENZA ritardo: gli swipe si difendono già
+     da soli col voto di maggioranza sulla finestra e con la coerenza di
+     direzione. Applicare anche a loro l'attesa li rendeva inservibili — una
+     gesticolata dura sì e no mezzo secondo, e se ne andava tutta ad aspettare. */
+  let pinchDa = 0;
+
+  function agganciaPinch(kind, now) {
+    if (kind !== "pinch") {
+      pinchDa = 0;                       // uscita immediata, nessun ritardo
+      return kind;
+    }
+    if (velocita(now) > PINCH_MAX_SPEED) {
+      pinchDa = 0;                       // la mano corre: è uno swipe
+      return "other";
+    }
+    if (!pinchDa) pinchDa = now;
+    return now - pinchDa >= POSE_STABLE_MS ? "pinch" : "other";
+  }
+
+  /** Velocità orizzontale della mano, in palmi al secondo. */
+  function velocita(now) {
+    if (track.length < 2) return 0;
+    const a = track[0], b = track[track.length - 1];
+    const dt = (b.t - a.t) / 1000;
+    if (dt <= 0.001) return 0;
+    return Math.abs((b.x - a.x) / Math.max(b.s, 1e-6)) / dt;
+  }
+
   /* ---------- riconoscimento ---------- */
   function classify(lm, now) {
-    const p = pose(lm);
+    const grezza = pose(lm);
     lastSeen = now;
+
+    const p = { ...grezza, kind: agganciaPinch(grezza.kind, now) };
+
+    /* Il tracciato della posizione si aggiorna SEMPRE, prima di ogni ramo:
+       serve anche al gate di velocità qui sopra. Se lo aggiornassimo solo nel
+       ramo swipe, durante un pinch resterebbe vuoto, la velocità risulterebbe
+       zero e il gate non potrebbe mai intervenire. */
+    track.push({ x: lm[9].x, s: handScale(lm), t: now, kind: p.kind });
+    while (track.length && now - track[0].t > SWIPE_MS) track.shift();
 
     // --- armamento con il palmo aperto tenuto fermo ---
     if (!armed) {
@@ -262,21 +325,18 @@
         onEvent({ action: "volume", value: vol });
         onState({ armed: true, hint: `volume ${vol}%` });
       }
-      track = [];
       return p;
     }
     // Uscita dal pinch: il filtro riparte pulito al prossimo aggancio.
     if (pinching) { pinching = false; filtroPinch.reset(); }
 
     /* --- swipe ---
-       Seguiamo il centro del palmo (nocca media), non il polso: durante uno
-       swipe di avambraccio il polso si sposta poco ed era facile restare sotto
-       soglia. Lo spostamento è diviso per la lunghezza del palmo, così vale in
-       "palmi" e funziona identico da vicino e da lontano. */
+       Il tracciato segue il centro del palmo (nocca media), non il polso:
+       durante uno swipe di avambraccio il polso si sposta poco ed era facile
+       restare sotto soglia. Lo spostamento è in "palmi", quindi vale identico
+       da vicino e da lontano. */
     const centro = lm[9].x;
     const scala = handScale(lm);
-    track.push({ x: centro, s: scala, t: now, kind: p.kind });
-    while (track.length && now - track[0].t > SWIPE_MS) track.shift();
 
     if ((p.kind === "open" || p.kind === "fist") && track.length >= 5
         && now - lastAction > SWIPE_COOLDOWN) {
