@@ -191,61 +191,37 @@ body.gest-armed .cam-state{color:var(--glow);opacity:1}
 .holo-switch{margin-top:12px}
 
 #holo{position:fixed;inset:0;z-index:60;display:none;cursor:none;
-  perspective:1400px;perspective-origin:50% 45%;font-family:var(--font);
+  perspective:1600px;perspective-origin:50% 45%;font-family:var(--font);
   background:radial-gradient(ellipse at center, rgba(4,10,16,.55), rgba(2,5,9,.82));
   -webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px)}
 
 #holo-scene{position:absolute;inset:0;transform-style:preserve-3d;
   transition:transform .12s ease-out}
 
-/* pannelli fluttuanti — lastre di vetro luminoso */
-.holo-panel{position:absolute;min-width:210px;padding:16px 18px 18px;
+/* le schede REALI sollevate nello spazio 3D: diventano lastre di vetro
+   luminoso che fluttuano. !important perché devono vincere su bordo/sfondo
+   già definiti da .panel/.topbar/.controls. */
+.holo-card{
   transform:translateZ(var(--z));
-  border:1px solid var(--glow);border-radius:14px;
-  background:linear-gradient(160deg, rgba(20,40,54,.42), rgba(8,18,26,.30));
-  -webkit-backdrop-filter:blur(9px);backdrop-filter:blur(9px);
-  box-shadow:0 0 26px rgba(53,224,255,.22), inset 0 0 26px rgba(53,224,255,.06),
-    0 24px 60px rgba(0,0,0,.5);
-  color:var(--text);animation:holofloat 7s ease-in-out infinite}
-.holo-panel:nth-of-type(2){animation-duration:8.5s;animation-delay:-2s}
-.holo-panel:nth-of-type(3){animation-duration:6s;animation-delay:-4s}
-.holo-panel.dragging{animation:none;box-shadow:0 0 40px var(--glow),
-    inset 0 0 30px rgba(53,224,255,.12), 0 30px 70px rgba(0,0,0,.6)}
-.holo-panel::before{content:"";position:absolute;inset:0;border-radius:14px;
-  pointer-events:none;border:1px solid rgba(255,255,255,.05)}
+  border:1px solid var(--glow) !important;
+  border-radius:14px !important;
+  background:linear-gradient(160deg, rgba(20,40,54,.5), rgba(8,18,26,.4)) !important;
+  -webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);
+  box-shadow:0 0 28px rgba(53,224,255,.22), inset 0 0 26px rgba(53,224,255,.06),
+    0 26px 64px rgba(0,0,0,.55) !important;
+  animation:holofloat 7s ease-in-out infinite}
+.holo-card:nth-child(2){animation-duration:8.5s;animation-delay:-1.5s}
+.holo-card:nth-child(3){animation-duration:6.5s;animation-delay:-3s}
+.holo-card:nth-child(4){animation-duration:9s;animation-delay:-4.5s}
+.holo-card:nth-child(5){animation-duration:7.5s;animation-delay:-2.2s}
+.holo-card.dragging{animation:none;
+  box-shadow:0 0 44px var(--glow), inset 0 0 30px rgba(53,224,255,.12),
+    0 32px 74px rgba(0,0,0,.6) !important}
 
-.holo-grip{width:44px;height:4px;border-radius:3px;margin:-4px auto 12px;
-  background:var(--glow);box-shadow:0 0 10px var(--glow);opacity:.65}
-.holo-panel h3{font-size:11px;letter-spacing:5px;color:var(--glow);opacity:.85;
-  text-shadow:0 0 10px var(--glow-dim);margin-bottom:14px;
-  border-bottom:1px solid var(--line);padding-bottom:8px}
-
-.holo-stat{margin-bottom:12px}
-.holo-stat label{font-size:9px;letter-spacing:2px;opacity:.6}
-.holo-bar{height:6px;border:1px solid var(--line);border-radius:3px;overflow:hidden;
-  margin:5px 0 3px}
-.holo-bar i{display:block;height:100%;width:0;background:var(--glow);
-  box-shadow:0 0 10px var(--glow);transition:width .5s}
-.holo-stat span{font-size:10px;color:var(--glow)}
-
-.holo-clock{font-size:34px;letter-spacing:3px;color:var(--glow);
-  text-shadow:0 0 16px var(--glow-dim);text-align:center;margin:6px 0}
-.holo-date{font-size:10px;letter-spacing:3px;opacity:.6;text-align:center}
-
-.holo-brand{text-align:center;min-width:230px}
-.holo-core{width:70px;height:70px;margin:4px auto 14px;border-radius:50%;
-  border:2px solid var(--glow);box-shadow:0 0 30px var(--glow),inset 0 0 26px var(--glow-dim);
-  display:flex;align-items:center;justify-content:center;animation:pulse 2.4s infinite}
-.holo-core span{width:26px;height:26px;border-radius:50%;background:#eafcff;
-  box-shadow:0 0 22px var(--glow)}
-.holo-mark{font-size:20px;font-weight:700;letter-spacing:7px;color:var(--glow);
-  text-shadow:0 0 14px var(--glow)}
-.holo-tag{font-size:9px;letter-spacing:2px;opacity:.5;margin-top:6px}
-
-/* tasto olografico (es. ESCI) */
-.holo-btn{position:absolute;transform:translateZ(var(--z));
+/* tasto olografico ESCI: fisso in alto a destra, fuori dalla scena rotante */
+.holo-btn{position:fixed;top:16px;right:24px;z-index:71;
   padding:12px 22px;border:1px solid var(--glow);border-radius:10px;
-  background:rgba(20,40,54,.4);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);
+  background:rgba(20,40,54,.5);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);
   color:var(--glow);font-size:12px;letter-spacing:5px;font-weight:700;
   box-shadow:0 0 22px rgba(53,224,255,.25);text-shadow:0 0 10px var(--glow)}
 

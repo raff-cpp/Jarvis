@@ -1,64 +1,56 @@
 /* J.A.R.V.I.S. — modalità olografica.
 
-   Un livello di pannelli traslucidi che "fluttuano" davanti alla HUD, con
-   profondità e parallasse, che si manipolano con la mano in aria:
+   Entrando in modalità ologramma, le schede VERE della HUD (diagnostica,
+   reattore, registro, barra, controlli) vengono "sollevate" in uno spazio 3D e
+   diventano manipolabili con la mano in aria:
      punta dell'indice  -> cursore
-     pinch (dita unite)  -> afferra un pannello e trascinalo, o clicca un tasto
+     pinch (dita unite)  -> afferra una scheda e trascinala, o clicca un tasto
 
-   Il tracciamento viene da gestures.js in "modalità puntatore"; qui ci occupiamo
-   solo di scena e interazione. C'è anche un ripiego a MOUSE: comodo come
-   alternativa e indispensabile per collaudare senza webcam (mouse premuto =
-   pinch). Nessun ologramma vero nell'aria — per quello serve un visore — ma
-   l'effetto scenico "sposto lastre di luce con le mani" è tutto qui. */
+   Non creiamo schede finte: prendiamo quelle reali, le spostiamo dentro la
+   scena e alla chiusura le rimettiamo esattamente dov'erano. Così restano vive
+   (CPU, orologio, reattore continuano ad aggiornarsi mentre fluttuano) e non c'è
+   nulla da tenere sincronizzato in doppio.
+
+   Il tracciamento viene da gestures.js in "modalità puntatore"; c'è anche un
+   ripiego a MOUSE (tasto premuto = pinch), comodo come alternativa e per
+   collaudare senza webcam. Non è un ologramma vero nell'aria — per quello serve
+   un visore — ma l'effetto "sposto lastre di luce con le mani" è tutto qui. */
 window.JarvisHolo = (() => {
   "use strict";
+
+  /* Le schede reali da sollevare, con la loro "profondità" (translateZ): più
+     alta = più in primo piano. Il reattore sta davanti a tutto. */
+  const CARTE = [
+    { sel: "header.topbar", z: 30 },
+    { sel: "aside.panel-left", z: 70 },
+    { sel: "main.stage", z: 120 },
+    { sel: "aside.panel-right", z: 70 },
+    { sel: "footer.controls", z: 45 },
+  ];
+  const PERSP = 1600;           // deve combaciare con `perspective` di #holo nel CSS
 
   let root = null, scene = null, cursor = null;
   let built = false, aperto = false;
   let onClose = null;
+  let sollevate = [];           // {el, parent, next, style} per rimettere tutto a posto
 
-  /* Trascinamento: registriamo la posizione del pannello e del cursore all'atto
-     della presa, poi spostiamo per DIFFERENZA in coordinate schermo. Durante la
-     presa la parallasse viene congelata, così l'angolo resta costante e lo
-     scostamento schermo↔pannello coincide (a meno di <2% per angoli piccoli):
-     niente inversione di matrici 3D, e il pannello segue la mano fedelmente. */
+  /* Trascinamento per differenza in coordinate schermo; la parallasse è
+     congelata durante la presa così l'angolo resta costante e la scheda segue la
+     mano. Il fattore prospettico (dragScala) compensa il fatto che una scheda in
+     primo piano si muove sullo schermo più del suo left/top. */
   let dragging = null, startLeft = 0, startTop = 0, startPx = 0, startPy = 0;
-  let dragScala = 1;            // vedi pinchGiu: compensa la prospettiva del pannello
+  let dragScala = 1;
   let pinchPrev = false;
-  let zTop = 20;                 // z-index crescente: l'ultimo preso va davanti
-  let statsTimer = null, clockTimer = null, fadeTimer = null;
-
-  const PERSP = 1400;           // deve combaciare con `perspective` di #holo nel CSS
-
-  const PANNELLI = `
-    <div class="holo-panel" data-panel style="--z:40px; left:7%; top:20%">
-      <div class="holo-grip"></div>
-      <h3>SISTEMA</h3>
-      <div class="holo-stat"><label>CPU</label><div class="holo-bar"><i id="holo-cpu"></i></div><span id="holo-cpu-v">--%</span></div>
-      <div class="holo-stat"><label>MEMORIA</label><div class="holo-bar"><i id="holo-ram"></i></div><span id="holo-ram-v">-- / -- GB</span></div>
-      <div class="holo-stat"><label>DISCO C:</label><div class="holo-bar"><i id="holo-disk"></i></div><span id="holo-disk-v">-- GB</span></div>
-    </div>
-    <div class="holo-panel" data-panel style="--z:96px; left:58%; top:16%">
-      <div class="holo-grip"></div>
-      <h3>OROLOGIO</h3>
-      <div class="holo-clock" id="holo-time">--:--:--</div>
-      <div class="holo-date" id="holo-date">--</div>
-    </div>
-    <div class="holo-panel holo-brand" data-panel style="--z:150px; left:33%; top:52%">
-      <div class="holo-grip"></div>
-      <div class="holo-core"><span></span></div>
-      <div class="holo-mark">J.A.R.V.I.S.</div>
-      <div class="holo-tag">Just A Rather Very Intelligent System</div>
-    </div>
-    <div class="holo-btn" data-act="esci" style="--z:170px; right:6%; top:9%">ESCI</div>
-  `;
+  let zTop = 20;
+  let fadeTimer = null;
 
   function build() {
     if (built) return;
     root = document.createElement("div");
     root.id = "holo";
     root.innerHTML =
-      `<div id="holo-scene">${PANNELLI}</div>` +
+      `<div id="holo-scene"></div>` +
+      `<div class="holo-btn" id="holo-esci" data-act="esci">ESCI</div>` +
       `<div id="holo-cursor"></div>` +
       `<div id="holo-hint">INDICE = PUNTATORE · PINCH = AFFERRA / CLIC ·` +
       ` <b>ESC</b> o «ESCI» per uscire</div>`;
@@ -72,19 +64,42 @@ window.JarvisHolo = (() => {
     built = true;
   }
 
-  /* Converte le posizioni iniziali da percentuale a pixel, così il
-     trascinamento lavora su numeri semplici. Si calcola dalla percentuale
-     GREZZA, non da getBoundingClientRect: quest'ultimo restituisce la posizione
-     già proiettata dal translateZ, e riscriverla come left/top farebbe
-     ri-applicare la prospettiva una seconda volta (il pannello "scivolerebbe"
-     alla prima apertura). Convertiamo una volta sola: se è già in px (pannello
-     spostato in una sessione precedente) lo lasciamo dov'è. */
-  function disponi() {
-    const w = window.innerWidth, h = window.innerHeight;
-    scene.querySelectorAll(".holo-panel").forEach((p) => {
-      if (p.style.left.endsWith("%")) p.style.left = Math.round(parseFloat(p.style.left) / 100 * w) + "px";
-      if (p.style.top.endsWith("%")) p.style.top = Math.round(parseFloat(p.style.top) / 100 * h) + "px";
-    });
+  /* Solleva le schede reali: le fissa dove sono ora, le rende schede olografiche
+     e le sposta dentro la scena. Ricorda com'erano per la chiusura. */
+  function solleva() {
+    sollevate = [];
+    for (const c of CARTE) {
+      const el = document.querySelector(c.sel);
+      if (!el) continue;
+      const r = el.getBoundingClientRect();
+      sollevate.push({ el, parent: el.parentNode, next: el.nextSibling,
+                       style: el.getAttribute("style") });
+      el.classList.add("holo-card");
+      el.style.position = "absolute";
+      el.style.left = Math.round(r.left) + "px";
+      el.style.top = Math.round(r.top) + "px";
+      el.style.width = Math.round(r.width) + "px";
+      el.style.height = Math.round(r.height) + "px";
+      el.style.margin = "0";
+      el.style.setProperty("--z", c.z + "px");
+      scene.appendChild(el);        // reparent: mantiene listener, canvas e contenuti vivi
+    }
+  }
+
+  /* Rimette ogni scheda dove stava, con lo stile originale. In ordine INVERSO:
+     il "next" di ciascuna è la scheda seguente, quindi ripristinando prima le
+     ultime i riferimenti restano validi e la griglia torna identica. */
+  function riposa() {
+    for (let i = sollevate.length - 1; i >= 0; i--) {
+      const s = sollevate[i];
+      s.el.classList.remove("holo-card");
+      // Ripristina lo stile originale se c'era; se era assente O vuoto togliamo
+      // del tutto l'attributo, così non resta un `style=""` residuo.
+      if (s.style) s.el.setAttribute("style", s.style);
+      else s.el.removeAttribute("style");
+      s.parent.insertBefore(s.el, s.next);
+    }
+    sollevate = [];
   }
 
   /* ---------- interazione, in coordinate schermo (px) ---------- */
@@ -98,21 +113,18 @@ window.JarvisHolo = (() => {
     fadeTimer = setTimeout(() => cursor.classList.add("lost"), 500);
 
     // Parallasse: la scena si inclina seguendo il cursore. Congelata mentre
-    // trascini, per non falsare la corrispondenza schermo↔pannello.
+    // trascini, per non falsare la corrispondenza schermo↔scheda.
     if (!dragging) {
       const rx = py / window.innerHeight - 0.5;
       const ry = px / window.innerWidth - 0.5;
       scene.style.transform =
-        `rotateX(${(-rx * 7).toFixed(2)}deg) rotateY(${(ry * 9).toFixed(2)}deg)`;
+        `rotateX(${(-rx * 5).toFixed(2)}deg) rotateY(${(ry * 6).toFixed(2)}deg)`;
     }
 
     if (pinch && !pinchPrev) pinchGiu(px, py);
     else if (!pinch && pinchPrev) pinchSu();
 
     if (pinch && dragging) {
-      // Diviso per la scala prospettica: un pannello "vicino" (translateZ alto)
-      // sullo schermo si muove più del suo left/top, quindi lo spostamento in
-      // left/top va ridotto d'altrettanto perché segua il cursore 1:1.
       dragging.style.left = startLeft + (px - startPx) / dragScala + "px";
       dragging.style.top = startTop + (py - startPy) / dragScala + "px";
     }
@@ -124,16 +136,16 @@ window.JarvisHolo = (() => {
     if (!el) return;
     const btn = el.closest(".holo-btn");
     if (btn) { azione(btn.dataset.act); lampeggia(); return; }
-    const panel = el.closest(".holo-panel");
-    if (panel) {
-      dragging = panel;
-      startLeft = parseFloat(panel.style.left) || 0;
-      startTop = parseFloat(panel.style.top) || 0;
+    const card = el.closest(".holo-card");
+    if (card) {
+      dragging = card;
+      startLeft = parseFloat(card.style.left) || 0;
+      startTop = parseFloat(card.style.top) || 0;
       startPx = px; startPy = py;
-      const z = parseFloat(getComputedStyle(panel).getPropertyValue("--z")) || 0;
-      dragScala = PERSP / (PERSP - z);       // >1 per i pannelli in primo piano
-      panel.style.zIndex = ++zTop;
-      panel.classList.add("dragging");
+      const z = parseFloat(getComputedStyle(card).getPropertyValue("--z")) || 0;
+      dragScala = PERSP / (PERSP - z);       // >1 per le schede in primo piano
+      card.style.zIndex = ++zTop;
+      card.classList.add("dragging");
     }
   }
 
@@ -158,57 +170,30 @@ window.JarvisHolo = (() => {
     suPuntatore(e.clientX, e.clientY, mouseGiu);
   }
 
-  /* ---------- dati dei pannelli ---------- */
-  function pct(v) { return Math.min(100, Math.max(0, v)) + "%"; }
-
-  async function aggiornaStats() {
-    try {
-      const s = await (await fetch("/api/stats")).json();
-      document.getElementById("holo-cpu").style.width = pct(s.cpu);
-      document.getElementById("holo-cpu-v").textContent = s.cpu + "%";
-      const ramPct = s.ramTotal ? (s.ramUsed / s.ramTotal) * 100 : 0;
-      document.getElementById("holo-ram").style.width = pct(ramPct);
-      document.getElementById("holo-ram-v").textContent = `${s.ramUsed} / ${s.ramTotal} GB`;
-      const diskPct = s.diskTotal ? ((s.diskTotal - s.diskFree) / s.diskTotal) * 100 : 0;
-      document.getElementById("holo-disk").style.width = pct(diskPct);
-      document.getElementById("holo-disk-v").textContent = `${s.diskFree} GB liberi`;
-    } catch (e) { /* il server può essere momentaneamente occupato */ }
-  }
-
-  const GIORNI = ["DOM", "LUN", "MAR", "MER", "GIO", "VEN", "SAB"];
-  const MESI = ["GEN", "FEB", "MAR", "APR", "MAG", "GIU", "LUG", "AGO", "SET", "OTT", "NOV", "DIC"];
-  function aggiornaOrologio() {
-    const d = new Date();
-    document.getElementById("holo-time").textContent = d.toLocaleTimeString("it-IT");
-    document.getElementById("holo-date").textContent =
-      `${GIORNI[d.getDay()]} ${d.getDate()} ${MESI[d.getMonth()]} ${d.getFullYear()}`;
-  }
-
   function suTasto(e) { if (e.key === "Escape") uscita(); }
 
   /* ---------- ciclo di vita ---------- */
   function apri(opts) {
+    if (aperto) return;
     build();
     onClose = (opts && opts.onClose) || null;
+    solleva();                    // le schede reali entrano nello spazio 3D
     root.style.display = "block";
     aperto = true;
-    disponi();
     scene.style.transform = "";
-    pinchPrev = false; mouseGiu = false; dragging = null;
+    pinchPrev = false; mouseGiu = false; dragging = null; zTop = 20;
     cursor.classList.add("lost");
-    aggiornaStats(); aggiornaOrologio();
-    statsTimer = setInterval(aggiornaStats, 4000);
-    clockTimer = setInterval(aggiornaOrologio, 1000);
     document.addEventListener("keydown", suTasto);
   }
 
   function spegni() {
     if (!aperto) return;
     aperto = false;
-    root.style.display = "none";
-    clearInterval(statsTimer); clearInterval(clockTimer); clearTimeout(fadeTimer);
-    document.removeEventListener("keydown", suTasto);
     dragging = null; pinchPrev = false;
+    clearTimeout(fadeTimer);
+    document.removeEventListener("keydown", suTasto);
+    riposa();                     // le schede tornano nella griglia, com'erano
+    root.style.display = "none";
   }
 
   // Chiusura richiesta dall'interno (tasto ESCI o ESC): avvisa chi ci ha aperti,
