@@ -26,7 +26,7 @@ browser, riconoscimento vocale, sintesi vocale italiana e un cervello **Gemini**
 
 | Modo | Come |
 |---|---|
-| **Scorciatoia globale** | **Ctrl+Alt+J** da qualunque applicazione: la HUD viene in primo piano e il microfono si apre già armato. |
+| **Scorciatoia globale** | **Ctrl+Alt+J** da qualunque applicazione: **avvia** Jarvis se è spento, altrimenti ne porta la HUD in primo piano col microfono già armato. |
 | **Push-to-talk** | Clicca il microfono e parla. |
 | **Sempre in ascolto** | Attiva *Ascolto continuo*: risponde solo dopo la parola «Jarvis». |
 | **Senza parola chiave** | Ascolto continuo + togli *Parola d'attivazione*: esegue qualunque frase. |
@@ -40,8 +40,17 @@ solo in **ascolto continuo**, e solo se la parola è pronunciata da sola: mentre
 parla nessun'altra frase viene interpretata, così una parola captata per sbaglio
 può al massimo zittirlo — mai far partire un comando.
 
-La scorciatoia **Ctrl+Alt+J** si cambia con `JARVIS_HOTKEY` nel file `.env`. Se un
-altro programma la occupa già, Jarvis lo scrive all'avvio e parte lo stesso.
+Perché **Ctrl+Alt+J** funzioni anche **a Jarvis spento** serve una scorciatoia a
+livello di Windows: lanciala una volta con
+
+```
+powershell -ExecutionPolicy Bypass -File scripts\installa-scorciatoia.ps1
+```
+
+Crea sul Desktop il collegamento *Jarvis* con il tasto di scelta rapida Ctrl+Alt+J:
+da spento avvia Jarvis, da acceso lo richiama in primo piano. La combinazione si
+cambia dalle proprietà di quel collegamento (e `JARVIS_HOTKEY` nel `.env` resta la
+scorciatoia interna usata quando il collegamento non è installato).
 
 Esempi: *«che ore sono»*, *«com'e messo il PC»*, *«apri VS Code»*, *«alza il volume»*,
 *«metti in pausa la musica»*, *«guarda lo schermo e dimmi cosa vedi»*, *«cerca i file

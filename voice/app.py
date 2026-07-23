@@ -153,6 +153,22 @@ def pilota_stop():
     return jsonify({"status": "ok"})
 
 
+@app.route("/wake", methods=["GET", "POST"])
+def wake():
+    """Richiamo esterno della scorciatoia globale Ctrl+Alt+J.
+
+    La scorciatoia vive a livello di Windows (vedi scripts\\jarvis-hotkey.vbs
+    e scripts\\installa-scorciatoia.ps1): cosi' funziona anche quando Jarvis
+    e' spento, cosa che una scorciatoia registrata dentro il processo non
+    potrebbe mai fare. Quando invece Jarvis e' gia' acceso, il launcher colpisce
+    questo endpoint per portarlo in primo piano e aprire il microfono.
+
+    Raggiungibile solo da 127.0.0.1: il server non ascolta sulla rete.
+    """
+    _on_hotkey()
+    return jsonify({"status": "ok"})
+
+
 @app.route("/api/stats")
 def stats():
     return jsonify(tools.system_status_brief())
@@ -422,10 +438,15 @@ def _hotkey_loop():
     MOD_NOREPEAT = 0x4000
     # RegisterHotKey e il ciclo dei messaggi devono stare nello STESSO thread.
     if not user32.RegisterHotKey(None, 1, mods | MOD_NOREPEAT, tasto):
-        print(f"[jarvis] scorciatoia {HOTKEY.upper()} non disponibile "
-              "(probabilmente gia usata da un altro programma).", file=sys.stderr)
+        # Fallisce anche quando la scorciatoia di Windows sul desktop possiede
+        # gia' la combinazione (vedi scripts\installa-scorciatoia.ps1): in quel
+        # caso e' quella a gestirla, sia a Jarvis acceso (endpoint /wake) sia da
+        # spento. Nessun problema: e' anzi la configurazione consigliata.
+        print(f"  Scorciatoia {HOTKEY.upper()}: gestita fuori dal processo "
+              "(scorciatoia di Windows sul desktop o altro programma).",
+              file=sys.stderr)
         return
-    print(f"  Scorciatoia globale: {HOTKEY.upper()}")
+    print(f"  Scorciatoia globale (solo a Jarvis acceso): {HOTKEY.upper()}")
     msg = wintypes.MSG()
     WM_HOTKEY = 0x0312
     while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
