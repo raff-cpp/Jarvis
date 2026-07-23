@@ -37,6 +37,8 @@
   let booted = false;
   let armed = false;        // wake word gia sentita: prossima frase = comando
   let armTimer = null;
+  let nativeMode = false;         // modalità "finestre reali": la mano va all'overlay nativo
+  let nativeHaAccesoCam = false;  // l'abbiamo accesa noi entrando in modalità finestre reali
 
   function setState(s) {
     body.dataset.state = s;
@@ -128,6 +130,14 @@
         accodaAnnuncio(m.text);
       } else if (m.type === "gesture_ack") {
         addEntry(m.text, "act");           // solo i gesti discreti, non il volume
+      } else if (m.type === "holo_native_stopped") {
+        // L'overlay delle finestre reali è stato chiuso da ESC o «ESCI».
+        holoNativeBox.checked = false;
+        if (nativeMode) {
+          nativeMode = false;
+          window.JarvisGestures.setPointerMode(false);
+          if (nativeHaAccesoCam) { gestBox.checked = false; stopGestures(); nativeHaAccesoCam = false; }
+        }
       } else if (m.type === "done") {
         processing = false;
         if (!speaking) goIdle();
@@ -724,7 +734,7 @@
         onEvent: sendGesture,
         onState: gestureState,
         onPresence: sendPresence,
-        onPointer: (p) => window.JarvisHolo.pointer(p),
+        onPointer: onHandPointer,
       });
       camState.textContent = "palmo aperto per attivare";
       localStorage.setItem(GEST_KEY, "1");
@@ -785,6 +795,58 @@
       window.JarvisHolo.close();
       window.JarvisGestures.setPointerMode(false);
       if (holoHaAccesoCam) { gestBox.checked = false; stopGestures(); holoHaAccesoCam = false; }
+    }
+  });
+
+  /* ---------- Modalità finestre reali (overlay nativo) ----------
+     Qui la mano non muove le schede della HUD ma le finestre VERE del sistema
+     (Spotify, VS Code…). La posizione va al server, che pilota holo_overlay.py:
+     un overlay nativo trasparente su tutti i monitor. La HUD viene minimizzata
+     per liberare il desktop; si esce con ESC o «ESCI» sull'overlay, e il server
+     ce lo ricomunica per rimettere a posto la HUD. */
+  const holoNativeBox = document.getElementById("holo-native");
+
+  function onHandPointer(p) {
+    if (nativeMode) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "handpointer", x: p.x, y: p.y, pinch: p.pinch }));
+      }
+      return;
+    }
+    if (window.JarvisHolo.isOpen()) window.JarvisHolo.pointer(p);
+  }
+
+  function fermaNative() {
+    if (!nativeMode) return;
+    nativeMode = false;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "holo_native", on: false }));
+    }
+    window.JarvisGestures.setPointerMode(false);
+    if (nativeHaAccesoCam) { gestBox.checked = false; stopGestures(); nativeHaAccesoCam = false; }
+  }
+
+  holoNativeBox.addEventListener("change", async () => {
+    if (holoNativeBox.checked) {
+      let mano = window.JarvisGestures.isRunning();
+      if (!mano) {
+        gestBox.checked = true;
+        nativeHaAccesoCam = true;
+        await startGestures();
+        mano = window.JarvisGestures.isRunning();
+      }
+      if (!mano) {           // senza webcam non c'è mano per pilotare l'overlay
+        holoNativeBox.checked = false;
+        if (nativeHaAccesoCam) { gestBox.checked = false; nativeHaAccesoCam = false; }
+        addEntry("Finestre reali: serve la webcam per pilotare l'overlay.", "sys");
+        return;
+      }
+      window.JarvisGestures.setPointerMode(true);
+      nativeMode = true;
+      ws.send(JSON.stringify({ type: "holo_native", on: true }));
+      addEntry("Finestre reali attive: afferra e sposta le finestre vere con la mano. ESC o «ESCI» per uscire.", "sys");
+    } else {
+      fermaNative();
     }
   });
 

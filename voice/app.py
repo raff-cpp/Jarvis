@@ -4,6 +4,7 @@ Il server ascolta SOLO su 127.0.0.1: non e raggiungibile dalla rete locale.
 La chiave di Google AI Studio resta in questo processo e non viene mai
 inviata al browser.
 """
+import atexit
 import json
 import os
 import subprocess
@@ -222,6 +223,21 @@ def _ws_loop(conn):
             except Exception:
                 pass
 
+        # Posizione della mano per l'overlay delle finestre reali: la giriamo
+        # subito al processo overlay, senza passare da nulla d'altro.
+        if msg.get("type") == "handpointer":
+            _overlay_pointer(float(msg.get("x", 0.5)),
+                             float(msg.get("y", 0.5)),
+                             bool(msg.get("pinch")))
+            continue
+
+        if msg.get("type") == "holo_native":
+            if msg.get("on"):
+                _overlay_start()
+            else:
+                _overlay_stop()
+            continue
+
         # I gesti non passano dal modello: sono azioni dirette e devono essere
         # immediate (il pinch aggiorna il volume molte volte al secondo).
         if msg.get("type") == "gesture":
@@ -293,6 +309,120 @@ def _handle_gesture(msg):
         print("[jarvis] gesto non riuscito: " + redact(e), file=sys.stderr)
         return "Gesto non riuscito"
     return None
+
+
+# ---- Overlay olografico delle finestre reali -------------------------------
+# La modalita' "finestre reali" apre un overlay nativo trasparente
+# (holo_overlay.py) che copre tutti i monitor e ti fa afferrare/spostare le
+# finestre vere con la mano. Il tracciamento resta nel browser: la HUD ci manda
+# la posizione della mano, noi la giriamo all'overlay via stdin. Per liberare il
+# desktop, mentre l'overlay e' attivo la finestra della HUD viene minimizzata.
+
+_overlay_proc = None
+_overlay_lock = threading.Lock()
+_OVERLAY_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "holo_overlay.py")
+
+
+def _hud_window(ripristina):
+    """Minimizza (False) o ripristina (True) la finestra Chrome della HUD.
+
+    Filtra per classe 'Chrome_WidgetWin' cosi' non tocca la finestra della
+    console, che ha lo stesso titolo 'J.A.R.V.I.S.'.
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        EnumProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        target = []
+
+        def cb(h, _l):
+            if not user32.IsWindowVisible(h):
+                return True
+            t = ctypes.create_unicode_buffer(300)
+            user32.GetWindowTextW(h, t, 300)
+            c = ctypes.create_unicode_buffer(200)
+            user32.GetClassNameW(h, c, 200)
+            if "J.A.R.V.I.S." in t.value and c.value.startswith("Chrome_WidgetWin"):
+                target.append(h)
+                return False
+            return True
+
+        user32.EnumWindows(EnumProc(cb), 0)
+        if target:
+            user32.ShowWindow(target[0], 9 if ripristina else 6)  # SW_RESTORE / SW_MINIMIZE
+    except Exception as e:
+        print("[jarvis] finestra HUD non gestita: " + redact(e), file=sys.stderr)
+
+
+def _overlay_start():
+    global _overlay_proc
+    with _overlay_lock:
+        if _overlay_proc and _overlay_proc.poll() is None:
+            return
+        flags = 0x08000000 if os.name == "nt" else 0     # CREATE_NO_WINDOW
+        try:
+            _overlay_proc = subprocess.Popen(
+                [sys.executable, _OVERLAY_PY],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                text=True, bufsize=1, creationflags=flags)
+        except Exception as e:
+            print("[jarvis] overlay non avviato: " + redact(e), file=sys.stderr)
+            _overlay_proc = None
+            return
+        threading.Thread(target=_overlay_watch, args=(_overlay_proc,), daemon=True).start()
+    _hud_window(ripristina=False)
+
+
+def _overlay_pointer(x, y, pinch):
+    with _overlay_lock:
+        p = _overlay_proc
+    if not p or p.poll() is not None:
+        return
+    try:
+        p.stdin.write(json.dumps({"x": x, "y": y, "pinch": pinch}) + "\n")
+        p.stdin.flush()
+    except (OSError, ValueError):
+        pass
+
+
+def _overlay_stop():
+    global _overlay_proc
+    with _overlay_lock:
+        p = _overlay_proc
+        _overlay_proc = None
+    if p and p.poll() is None:
+        try:
+            p.stdin.write('{"cmd":"stop"}\n')
+            p.stdin.flush()
+        except (OSError, ValueError):
+            pass
+        try:
+            p.wait(timeout=2)
+        except Exception:
+            try:
+                p.terminate()
+            except Exception:
+                pass
+    _hud_window(ripristina=True)
+
+
+def _overlay_watch(proc):
+    """Se l'overlay si chiude da solo (ESC o «ESCI»), ripristina la HUD e la avvisa."""
+    global _overlay_proc
+    try:
+        for line in proc.stdout:
+            if "STOPPED" in line:
+                break
+    except Exception:
+        pass
+    with _overlay_lock:
+        chiuso_da_solo = _overlay_proc is proc
+        if chiuso_da_solo:
+            _overlay_proc = None
+    if chiuso_da_solo:
+        _hud_window(ripristina=True)
+        _broadcast({"type": "holo_native_stopped"})
 
 
 # ---- Presenza --------------------------------------------------------------
@@ -547,6 +677,9 @@ def main():
         print("=" * 60)
         input("\nPremi Invio per chiudere...")
         return
+
+    # Se il server muore con l'overlay aperto, non lasciare la HUD minimizzata.
+    atexit.register(_overlay_stop)
 
     threading.Thread(target=_serve, daemon=True).start()
     # Prepara in anticipo l'audio delle frasi fisse: i comandi diretti diventano
