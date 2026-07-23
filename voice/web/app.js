@@ -141,6 +141,7 @@
       } else if (m.type === "done") {
         processing = false;
         if (!speaking) goIdle();
+        pollModels();          // la quota è appena cambiata: aggiorna il pannello
       }
     };
   }
@@ -913,6 +914,53 @@
     } catch (e) { /* riprovera al prossimo avvio */ }
   }
   loadInfo();
+
+  /* ---------- Modelli Gemini: quota residua di oggi, per modello ----------
+     Mostra tutta la catena (primario + ripieghi) con la quota giornaliera
+     stimata rimasta. Il modello con ▸ è quello che sta rispondendo ora; quelli
+     a zero hanno esaurito la quota gratuita del giorno (ecco perché a volte
+     Jarvis ripiega su un altro, magari più lento). */
+  const modelsBox = document.getElementById("models");
+  const modelsList = document.getElementById("models-list");
+
+  async function pollModels() {
+    try {
+      const r = await (await fetch("/api/models")).json();
+      if (!r.has_key || !r.models || !r.models.length) { modelsBox.hidden = true; return; }
+      modelsBox.hidden = false;
+      modelsList.replaceChildren();
+      for (const m of r.models) {
+        const li = document.createElement("li");
+        li.className = "model-row"
+          + (m.model === r.active ? " active" : "")
+          + (m.exhausted ? " exhausted" : "");
+
+        const name = document.createElement("span");
+        name.className = "m-name";
+        name.textContent = m.label;
+        const dettagli = [m.model];
+        if (m.used) dettagli.push(`${m.used}/${m.budget} oggi`);
+        if (m.last_latency != null) dettagli.push(`ultima ${m.last_latency}s`);
+        if (m.avg_latency != null) dettagli.push(`media ${m.avg_latency}s`);
+        name.title = dettagli.join(" · ");
+
+        const bar = document.createElement("span");
+        bar.className = "m-bar";
+        const fill = document.createElement("i");
+        fill.style.width = Math.max(0, Math.min(100, m.remaining)) + "%";
+        bar.appendChild(fill);
+
+        const pct = document.createElement("span");
+        pct.className = "m-pct";
+        pct.textContent = m.remaining + "%";
+
+        li.append(name, bar, pct);
+        modelsList.appendChild(li);
+      }
+    } catch (e) { /* riprova al prossimo giro */ }
+  }
+  pollModels();
+  setInterval(pollModels, 5000);
 
   runBoot();
   connect();

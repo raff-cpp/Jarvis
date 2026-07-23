@@ -10,6 +10,7 @@ __pycache__/
 
 # Dati locali di Jarvis
 memoria.json
+quota-modelli.json
 .ultimo-briefing
 voice/_tmp/
 

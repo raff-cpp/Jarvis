@@ -23,6 +23,7 @@ except ImportError:
 
 import intents
 import pilota
+import quota
 import tools
 import webtools
 
@@ -41,10 +42,20 @@ MAX_TOOL_ROUNDS = 12
 # Il piano gratuito di Gemini limita le richieste PER MODELLO (es. 20 al giorno).
 # Quando un modello esaurisce la quota (429) passiamo al successivo: cosi le
 # richieste disponibili si moltiplicano. Ogni modello ha secchielli separati.
+#
+# ORDINE = velocita. Quando il primario esaurisce la quota, il ripiego deve
+# essere RAPIDO: i modelli '-lite' rispondono in ~0.5s, mentre gemini-3.5-flash,
+# col suo ragionamento di default, arriva a 15-30s a chiamata (misurato). Quindi
+# i lite vengono prima, e i flash "pensanti" restano come ultima risorsa. Senza
+# questo, l'esaurimento del primario faceva crollare la reattivita a picco.
 _FALLBACK_MODELS = [
-    "gemini-3.6-flash", "gemini-3.5-flash", "gemini-flash-latest",
-    "gemini-3-flash-preview", "gemini-3.5-flash-lite", "gemini-flash-lite-latest",
+    "gemini-3.6-flash",          # primario: piu capace quando ha quota
+    "gemini-flash-lite-latest",  # ripiego RAPIDO (~0.5s), niente thinking
+    "gemini-3.5-flash-lite",
     "gemini-3.1-flash-lite",
+    "gemini-flash-latest",
+    "gemini-3.5-flash",          # capace ma LENTO (thinking): ultima risorsa
+    "gemini-3-flash-preview",
 ]
 _env_fallbacks = os.environ.get("JARVIS_FALLBACK_MODELS", "").strip()
 if _env_fallbacks:
@@ -73,6 +84,17 @@ def _is_transient(e):
     s = str(e).lower()
     return ("503" in s or "unavailable" in s or "high demand" in s
             or "overloaded" in s or "'code': 500" in s or "internal error" in s)
+
+
+def _is_thinking_error(e):
+    """Il modello ha rifiutato la configurazione del ragionamento (400).
+
+    Non tutti i modelli accettano lo stesso modo di regolare il 'thinking': se
+    la rifiutano, la disattiviamo per la sessione invece di far fallire il turno.
+    """
+    s = str(e).lower()
+    return "thinking" in s and ("invalid" in s or "400" in s
+                                or "not supported" in s or "unsupported" in s)
 
 # Budget di ragionamento. Vuoto = default del modello; 0 = disattivato (piu veloce).
 _BUDGET = os.environ.get("JARVIS_THINKING_BUDGET", "").strip()
@@ -408,6 +430,9 @@ class Jarvis:
         self.contents = []
         self._decls = _declarations() if self.has_key else []
         self._search_on = self.has_key and WEB_SEARCH in ("auto", "on")
+        # Alcuni modelli non accettano il budget di ragionamento: se capita, lo
+        # spegniamo per la sessione (vedi _call_with_search_fallback).
+        self._thinking_on = True
 
     # ---- entry point -------------------------------------------------------
     def process(self, text, on_status=None, on_action=None, on_say=None):
@@ -471,7 +496,7 @@ class Jarvis:
             # Il ciclo dei tool lo guidiamo noi: serve per la HUD e per le conferme.
             "automatic_function_calling": types.AutomaticFunctionCallingConfig(disable=True),
         }
-        if _BUDGET:
+        if _BUDGET and self._thinking_on:
             try:
                 cfg["thinking_config"] = types.ThinkingConfig(thinking_budget=int(_BUDGET))
             except ValueError:
@@ -486,20 +511,36 @@ class Jarvis:
                 chain.append(m)
         return chain
 
+    def model_chain(self):
+        """Catena di modelli (primario + ripieghi): per la HUD e la diagnostica."""
+        return self._model_chain()
+
+    def _raw_call(self, model):
+        return self.client.models.generate_content(
+            model=model, contents=self.contents, config=self._config())
+
     def _call_with_search_fallback(self, model):
-        """Una chiamata al modello dato. Se fallisce con la ricerca web attiva,
-        riprova una volta senza: alcuni modelli non combinano ricerca e strumenti,
-        o la ricerca ha quota separata. Se la colpa non era la ricerca, ripristina."""
+        """Una chiamata al modello dato, con due reti di sicurezza.
+
+        - Se il modello rifiuta il budget di ragionamento, lo disattiviamo per la
+          sessione e riproviamo: non tutti accettano lo stesso modo di regolarlo.
+        - Se fallisce con la ricerca web attiva, riprova una volta senza: alcuni
+          modelli non combinano ricerca e strumenti, o la ricerca ha quota
+          separata. Se la colpa non era la ricerca, ripristina.
+        """
         try:
-            return self.client.models.generate_content(
-                model=model, contents=self.contents, config=self._config())
+            return self._raw_call(model)
         except Exception as first:
+            if _BUDGET and self._thinking_on and _is_thinking_error(first):
+                self._thinking_on = False
+                print("[jarvis] budget di ragionamento non accettato da questo "
+                      "modello: uso il predefinito per la sessione.")
+                return self._raw_call(model)
             if not (self._search_on and WEB_SEARCH == "auto"):
                 raise
             self._search_on = False
             try:
-                resp = self.client.models.generate_content(
-                    model=model, contents=self.contents, config=self._config())
+                resp = self._raw_call(model)
             except Exception:
                 self._search_on = True
                 raise first
@@ -520,10 +561,12 @@ class Jarvis:
                 time.sleep(1.2)           # il sovraccarico e transitorio: aspetta e riprova
             saw_transient = False
             for model in self._model_chain():
+                t0 = time.perf_counter()
                 try:
                     resp = self._call_with_search_fallback(model)
                 except Exception as e:
                     if _is_quota(e):
+                        quota.record_exhausted(model)
                         last_quota = e
                         print(f"[jarvis] quota esaurita su {model}, provo un altro modello.")
                         continue
@@ -533,6 +576,9 @@ class Jarvis:
                         print(f"[jarvis] {model} sovraccarico, provo un altro modello.")
                         continue
                     raise
+                dt = time.perf_counter() - t0
+                quota.record_success(model, dt)
+                print(f"[jarvis][tempi] modello {model}: {dt:.2f}s")
                 if model != self.model:
                     print(f"[jarvis] passo al modello {model} per questa sessione.")
                     self.model = model
@@ -547,9 +593,12 @@ class Jarvis:
     def _gemini(self, text, st, ac, say):
         st("thinking")
         self.contents.append(types.Content(role="user", parts=[types.Part.from_text(text=text)]))
+        turn_t0 = time.perf_counter()
+        rounds = 0
         try:
             final = ""
             for _ in range(MAX_TOOL_ROUNDS):
+                rounds += 1
                 resp = self._generate()
                 cand = (resp.candidates or [None])[0]
                 if cand is None or cand.content is None:
@@ -614,6 +663,9 @@ class Jarvis:
             self._drop_incomplete_turn()
             print("[jarvis] errore nel turno: " + detail, file=__import__("sys").stderr)
             return "Errore: " + detail
+        finally:
+            dt = time.perf_counter() - turn_t0
+            print(f"[jarvis][tempi] turno completo: {rounds} round, {dt:.2f}s")
 
     @staticmethod
     def _blocked_message(resp, cand):
@@ -646,6 +698,7 @@ class Jarvis:
         """Esegue uno strumento e costruisce la Part di risposta (testo o immagine)."""
         fn = DISPATCH.get(fc.name)
         args = dict(fc.args or {})
+        t0 = time.perf_counter()
         try:
             if fc.name == "use_computer":
                 out = self._pilota(args)
@@ -653,6 +706,7 @@ class Jarvis:
                 out = fn(args) if fn else {"status": "error", "message": "strumento sconosciuto"}
         except Exception as e:
             out = {"status": "error", "message": str(e)}
+        print(f"[jarvis][tempi] strumento {fc.name}: {time.perf_counter() - t0:.2f}s")
 
         # Lo screenshot torna come immagine vera dentro il risultato, cosi Jarvis
         # la puo guardare invece di riceverne solo una descrizione.

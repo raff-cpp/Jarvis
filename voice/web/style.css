@@ -81,6 +81,28 @@ body.armed .ring-1{animation-duration:6s}
 .brain-line label{display:block;letter-spacing:2px;opacity:.6;margin-bottom:4px}
 .brain-line span{color:var(--glow)}
 
+/* Modelli Gemini: quota residua di ogni modello della catena. */
+.models{margin-top:18px}
+.models > label{display:block;font-size:9px;letter-spacing:1.5px;opacity:.6;margin-bottom:8px}
+.models-list{list-style:none;display:flex;flex-direction:column;gap:7px}
+.model-row{display:grid;grid-template-columns:1fr 46px;grid-template-rows:auto auto;
+  gap:2px 8px;align-items:center;font-size:10px}
+.model-row .m-name{grid-column:1;color:var(--text);opacity:.85;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;letter-spacing:.5px}
+.model-row .m-pct{grid-column:2;grid-row:1 / span 2;justify-self:end;
+  color:var(--glow);font-size:11px;opacity:.85}
+.model-row .m-bar{grid-column:1;height:4px;border:1px solid var(--line);border-radius:2px;
+  overflow:hidden}
+.model-row .m-bar i{display:block;height:100%;width:0%;background:var(--glow);
+  box-shadow:0 0 8px var(--glow-dim);transition:width .6s}
+/* Il modello che sta rispondendo ora: acceso e in evidenza. */
+.model-row.active .m-name{opacity:1;color:var(--glow);text-shadow:0 0 8px var(--glow-dim)}
+.model-row.active .m-name::before{content:"▸ ";opacity:.9}
+/* Quota esaurita: spento, in rosso spento. */
+.model-row.exhausted .m-name{opacity:.5}
+.model-row.exhausted .m-pct{color:#ff6a76;opacity:.8}
+.model-row.exhausted .m-bar i{background:#ff4a5a;box-shadow:none}
+
 /* stage / reattore */
 .stage{grid-area:stage;display:flex;flex-direction:column;align-items:center;justify-content:center}
 .reactor{position:relative;width:520px;height:520px;display:flex;align-items:center;justify-content:center}

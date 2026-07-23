@@ -24,6 +24,7 @@ except ImportError:
     pass
 
 import briefing                  # noqa: E402
+import quota                     # noqa: E402
 import speech                    # noqa: E402
 import tools                     # noqa: E402
 import watcher                   # noqa: E402
@@ -89,6 +90,20 @@ def info():
     # Espone solo booleani e il nome del modello: MAI la chiave.
     return jsonify({"has_key": jarvis.has_key, "model": jarvis.model,
                     "server_tts": speech.available})
+
+
+@app.route("/api/models")
+def models():
+    """Stato dei modelli Gemini per il pannello HUD: quota residua per modello.
+
+    Mostra tutta la catena (primario + ripieghi) con la quota giornaliera
+    stimata rimasta, quale sta rispondendo ora e la sua latenza recente.
+    Nessuna chiave, nessun dato sensibile: solo nomi di modello e numeri.
+    """
+    if not jarvis.has_key:
+        return jsonify({"has_key": False, "active": None, "models": []})
+    return jsonify({"has_key": True, "active": jarvis.model,
+                    "models": quota.snapshot(jarvis.model_chain())})
 
 
 @app.route("/api/voices")
