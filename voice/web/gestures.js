@@ -121,6 +121,15 @@
   const GRAB_COOLDOWN = 1400;   // pausa fra due spostamenti
   const GRAB_TOLLERANZA_MS = 450; // fotogrammi incerti tollerati senza azzerare
 
+  /* --- Puntatore (modalità olografica) ---
+     Un binario SEPARATO dai gesti discreti qui sopra: quando è attivo, la punta
+     dell'indice diventa un cursore e il pinch (pollice-indice uniti) è "afferra
+     / clic". La logica di volume/swipe/finestra non gira affatto, così le due
+     interazioni non si pestano i piedi. */
+  const POINTER_GAIN = 1.7;   // espande i movimenti: arrivi ai bordi senza uscire dall'inquadratura
+  const PINCH_GIU = 0.42;     // pollice-indice uniti (in palmi): afferra/clic
+  const PINCH_SU = 0.60;      // pollice-indice separati: rilascia (isteresi anti-tremolio)
+
   let landmarker = null;
   let faceDetector = null;
   let onPresence = () => {};
@@ -133,6 +142,7 @@
   let octx = null;
   let onEvent = () => {};
   let onState = () => {};
+  let onPointer = () => {};
 
   /* --- Stato del riconoscitore --- */
   let armed = false;
@@ -140,6 +150,12 @@
   let lastSeen = 0;
   let lastAction = 0;
   const filtroPinch = unEuro(PINCH_CUTOFF, PINCH_BETA, 1.0);
+  /* Puntatore: due filtri One-Euro (uno per asse) per un cursore fermo da
+     immobile ma reattivo in corsa. Isteresi del pinch in `pinchGiu`. */
+  const filtroPx = unEuro(1.6, 9.0, 1.0);
+  const filtroPy = unEuro(1.6, 9.0, 1.0);
+  let pointerMode = false;
+  let pinchGiu = false;
   let pinchMaxSeen = PINCH_MAX;   // estremi osservati: la scala si tara sulla mano
   let pinchMinSeen = PINCH_MIN;
   let lastVolSent = -1;
@@ -183,6 +199,7 @@
 
   /* ---------- geometria della mano ---------- */
   const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+  const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
   /** Scala della mano: serve a rendere le distanze indipendenti da quanto
       sei lontano dalla webcam. */
@@ -363,6 +380,25 @@
   function classify(lm, now) {
     const grezza = pose(lm);
     lastSeen = now;
+
+    /* --- binario del puntatore olografico ---
+       La punta dell'indice (lm[8]) guida il cursore; il pollice-indice uniti
+       sono "afferra/clic". Espandiamo il movimento attorno al centro (GAIN) per
+       raggiungere i bordi dello schermo con gesti piccoli, e filtriamo ogni
+       asse. Si esce SUBITO: la logica dei gesti discreti non deve nemmeno
+       partire, altrimenti muovendo il cursore partirebbero volume o swipe. */
+    if (pointerMode) {
+      const nx = 1 - lm[8].x;            // la webcam specchia: destra reale = destra a schermo
+      const ny = lm[8].y;
+      const sx = clamp01(0.5 + (nx - 0.5) * POINTER_GAIN);
+      const sy = clamp01(0.5 + (ny - 0.5) * POINTER_GAIN);
+      const fx = filtroPx.filtra(sx, now);
+      const fy = filtroPy.filtra(sy, now);
+      if (!pinchGiu && grezza.pinchDist < PINCH_GIU) pinchGiu = true;
+      else if (pinchGiu && grezza.pinchDist > PINCH_SU) pinchGiu = false;
+      onPointer({ x: fx, y: fy, pinch: pinchGiu });
+      return grezza;
+    }
 
     const p = { ...grezza, kind: agganciaPinch(grezza.kind, now) };
 
@@ -677,6 +713,7 @@
     onEvent = opts.onEvent || onEvent;
     onState = opts.onState || onState;
     onPresence = opts.onPresence || onPresence;
+    onPointer = opts.onPointer || onPointer;
     video = opts.video;
     overlay = opts.overlay;
     octx = overlay ? overlay.getContext("2d") : null;
@@ -757,6 +794,19 @@
     return showNumbers;
   }
 
+  /** Accende/spegne il puntatore olografico. Da spento, tornano i gesti
+      discreti (volume, tracce, finestra) esattamente come prima. */
+  function setPointerMode(on) {
+    pointerMode = !!on;
+    pinchGiu = false;
+    filtroPx.reset();
+    filtroPy.reset();
+    if (on) {                 // il puntatore non usa l'armamento: azzera lo stato dei gesti
+      armed = false;
+      onState({ armed: false });
+    }
+  }
+
   /* Ritmo reale del riconoscimento. Serve a rispondere con un numero, invece
      che a intuito, alla domanda "i gesti stanno ancora girando?" — soprattutto
      con la finestra coperta, dove non si vede nulla per definizione. */
@@ -769,5 +819,6 @@
     };
   }
 
-  window.JarvisGestures = { start, stop, toggleNumbers, stato, isRunning: () => running };
+  window.JarvisGestures = { start, stop, toggleNumbers, setPointerMode, stato,
+                            isRunning: () => running };
 })();

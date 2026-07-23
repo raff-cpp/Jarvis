@@ -724,6 +724,7 @@
         onEvent: sendGesture,
         onState: gestureState,
         onPresence: sendPresence,
+        onPointer: (p) => window.JarvisHolo.pointer(p),
       });
       camState.textContent = "palmo aperto per attivare";
       localStorage.setItem(GEST_KEY, "1");
@@ -747,6 +748,44 @@
   gestBox.addEventListener("change", () => {
     if (gestBox.checked) startGestures();
     else stopGestures();
+  });
+
+  /* ---------- Modalità olografica ----------
+     Pannelli che fluttuano davanti alla HUD e si manipolano con la mano in
+     aria. Ha bisogno della webcam (il puntatore viene dai gesti): se non è già
+     attiva, l'accendiamo qui. */
+  const holoBox = document.getElementById("holo");
+  let holoHaAccesoCam = false;   // ricordiamo se l'abbiamo accesa noi, per rispegnerla
+
+  holoBox.addEventListener("change", async () => {
+    if (holoBox.checked) {
+      // Proviamo ad accendere la webcam per il controllo a mani. Se non parte
+      // (negata, offline, modello non scaricabile) l'olografica si apre lo
+      // stesso e si guida col mouse: meglio degradare che non aprirsi affatto.
+      let mano = window.JarvisGestures.isRunning();
+      if (!mano) {
+        gestBox.checked = true;
+        holoHaAccesoCam = true;
+        await startGestures();
+        mano = window.JarvisGestures.isRunning();
+        if (!mano) { gestBox.checked = false; holoHaAccesoCam = false; }
+      }
+      if (mano) window.JarvisGestures.setPointerMode(true);
+      window.JarvisHolo.open({
+        onClose: () => {           // uscita da dentro (tasto ESCI o ESC)
+          holoBox.checked = false;
+          window.JarvisGestures.setPointerMode(false);
+          if (holoHaAccesoCam) { gestBox.checked = false; stopGestures(); holoHaAccesoCam = false; }
+        },
+      });
+      addEntry(mano
+        ? "Modalità olografica attiva. Indice per puntare, pinch per afferrare."
+        : "Modalità olografica attiva (senza webcam): guida col mouse, clic = afferra.", "sys");
+    } else {
+      window.JarvisHolo.close();
+      window.JarvisGestures.setPointerMode(false);
+      if (holoHaAccesoCam) { gestBox.checked = false; stopGestures(); holoHaAccesoCam = false; }
+    }
   });
 
   // Click sull'anteprima: mostra/nasconde i numeri di taratura.
