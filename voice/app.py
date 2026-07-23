@@ -701,6 +701,10 @@ def main():
     # istantanei anche la prima volta. In un thread, non blocca l'avvio.
     threading.Thread(target=speech.prewarm, daemon=True).start()
     threading.Thread(target=_hotkey_loop, daemon=True).start()
+    # Sonda a costo minimo del modello primario: cosi il pannello quota sulla HUD
+    # e' realistico gia all'avvio (mostra subito se il primario e' esaurito),
+    # senza aspettare il primo comando. Spende al piu una richiesta al giorno.
+    threading.Thread(target=jarvis.sonda_quota, daemon=True).start()
     if PROATTIVO:
         _watcher.start()
     if BRIEFING_AUTO:

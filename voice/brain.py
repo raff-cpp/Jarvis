@@ -515,6 +515,38 @@ class Jarvis:
         """Catena di modelli (primario + ripieghi): per la HUD e la diagnostica."""
         return self._model_chain()
 
+    def sonda_quota(self, model=None):
+        """Una sola chiamata minima al modello primario, per rendere il pannello
+        HUD realistico gia all'avvio: capisce subito se il primario e' esaurito.
+
+        Costo controllato: se il tracker sa gia lo stato del modello per oggi,
+        NON spende una richiesta. Gira in un thread: se la rete manca o il
+        modello e' lento, non blocca l'avvio del server.
+        """
+        if not self.has_key:
+            return
+        model = model or self.model
+        if quota.known(model):
+            return                        # gia noto oggi: niente richiesta sprecata
+        cfg = {"max_output_tokens": 8}
+        if _BUDGET and self._thinking_on:
+            try:
+                cfg["thinking_config"] = types.ThinkingConfig(thinking_budget=int(_BUDGET))
+            except ValueError:
+                pass
+        t0 = time.perf_counter()
+        try:
+            self.client.models.generate_content(
+                model=model, contents="ping",
+                config=types.GenerateContentConfig(**cfg))
+            quota.record_success(model, time.perf_counter() - t0)
+            print(f"[jarvis] sonda quota: {model} disponibile.")
+        except Exception as e:
+            if _is_quota(e):
+                quota.record_exhausted(model)
+                print(f"[jarvis] sonda quota: {model} esaurito (429).")
+            # Altri errori (rete, sovraccarico): si scoprira con l'uso normale.
+
     def _raw_call(self, model):
         return self.client.models.generate_content(
             model=model, contents=self.contents, config=self._config())

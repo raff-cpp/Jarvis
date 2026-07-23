@@ -119,6 +119,18 @@ def is_exhausted(model):
         return bool(r and r.get("exhausted"))
 
 
+def known(model):
+    """True se oggi sappiamo gia qualcosa di questo modello (usato o esaurito).
+
+    Serve alla sonda d'avvio per NON sprecare una richiesta quando l'esito e'
+    gia noto: se il modello e' stato toccato oggi, il pannello e' gia realistico.
+    """
+    with _lock:
+        st = _carica()
+        r = st["models"].get(model)
+        return bool(r and (r.get("ok") or r.get("exhausted")))
+
+
 def etichetta(model):
     """Nome leggibile per la HUD: 'gemini-3.6-flash' -> 'Gemini 3.6 flash'."""
     nome = model
