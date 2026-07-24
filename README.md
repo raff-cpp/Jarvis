@@ -176,14 +176,27 @@ disarma da solo.
 | **Due dita** (indice + medio), su / giù | scorre la pagina, come sul trackpad |
 | **Chiudi la mano** a pugno e tienila | finestra sull'altro schermo |
 
-Lo **scorrimento** è pensato per leggere: alza due dita (indice e medio, le altre
-chiuse) e muovi la mano in alto o in basso — la pagina segue, in proporzione a
-quanto muovi, con **mano giù = pagina giù** (come la rotellina del mouse). È una
-posa deliberata, distinta da tutte le altre, quindi non parte per sbaglio mentre
-gesticoli. Per un articolo lungo si "riprende" la presa come sul trackpad: riapri
-la mano, riportala in alto e rialza le due dita. Lo scorrimento va alla finestra
-**sotto il puntatore** (o a quella a fuoco), quindi tieni il mouse sopra
-l'articolo che stai leggendo.
+Lo **scorrimento** è pensato per leggere. **Non serve armare**: è l'unico gesto
+che funziona senza il palmo aperto, perché la posa a due dita è già deliberata e
+l'azione è innocua. Alza indice e medio (le altre chiuse), tienile ferme un
+istante — l'anteprima mostra **SCROLL ON** — e muovi la mano su o giù: la pagina
+segue, in proporzione, con **mano giù = pagina giù** (come la rotellina). Apri la
+mano per rilasciare. Per un articolo lungo si "riprende" la presa come sul
+trackpad: apri la mano, risali, rialza le due dita.
+
+Due cose importanti perché scorra **qualsiasi** app (Chrome, Spotify, PDF…):
+
+- Lo scorrimento è una **rotellina hardware vera** (`SendInput`), non un comando
+  "finto": le app basate su Chromium (Chrome, Spotify, Edge) ignorano gli eventi
+  rotellina sintetici, quindi serve quello reale. Così scorrono tutte.
+- Una rotellina reale va alla **finestra sotto il puntatore** (con l'opzione di
+  Windows «scorri le finestre inattive al passaggio del mouse», attiva di
+  default) o a quella a fuoco: **tieni il mouse sopra l'app che vuoi scorrere**.
+
+Se non parte, guarda l'anteprima: il numero **`due`** deve superare la soglia (si
+illumina di verde) e comparire **SCROLL ON**. In console appare `[jarvis][gesto]
+scorrimento …` a ogni movimento: se compare ma la pagina non si muove, sposta il
+mouse sull'app da scorrere.
 
 Lo spostamento finestra **non è più uno swipe**: chiudere la mano è una
 transizione di stato, non un movimento, quindi non soffre della sfocatura che

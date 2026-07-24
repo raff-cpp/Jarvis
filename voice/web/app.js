@@ -740,7 +740,8 @@
       camState.textContent = "palmo aperto per attivare";
       localStorage.setItem(GEST_KEY, "1");
       addEntry("Controllo a gesti attivo. Palmo aperto per armare, poi: pinch = volume, "
-        + "swipe = tracce, due dita su/giù = scorri la pagina, pugno = altra finestra.", "sys");
+        + "swipe = tracce, pugno = altra finestra. Due dita su/giù = scorri (senza armare; "
+        + "tieni il mouse sull'app da scorrere).", "sys");
     } catch (e) {
       // Webcam negata, offline, oppure modello non scaricabile.
       gestBox.checked = false;

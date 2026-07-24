@@ -135,6 +135,7 @@
   const TWO_MARGINE = 1.22;
   const SCROLL_GAIN = 1100;     // unita di rotellina per "palmo" di corsa verticale
   const SCROLL_ENTRA_MS = 120;  // due dita ferme per tanto -> entra in modalità scorrimento
+  const SCROLL_TIMEOUT_MS = 350; // mano sparita per tanto -> esci (niente salto al ritorno)
   const SCROLL_MIN_MS = 30;     // fino a ~33 invii al secondo: fluido
   const SCROLL_MIN_UNITS = 8;   // sotto questa quantita non inviamo: assorbe il tremolio
   /* Filtro One-Euro sull' altezza della mano: fermo da immobile (niente deriva
@@ -372,6 +373,12 @@
     if (p && showNumbers) {
       octx.font = "9px Consolas, monospace";
       octx.fillStyle = "rgba(255,255,255,.85)";
+      // "due" separa le due dita dalla mano aperta: sopra TWO_MARGINE è scroll.
+      // Serve a vedere se la TUA posa a V supera la soglia, e a tararla.
+      const dueR = Math.min(p.idx, p.mid) / Math.max(p.ring, p.pinky, 1e-6);
+      octx.fillStyle = dueR > TWO_MARGINE ? "rgba(120,255,180,.95)" : "rgba(255,255,255,.85)";
+      octx.fillText(`due ${dueR.toFixed(2)}/${TWO_MARGINE}  ${scrolling ? "SCROLL ON" : ""}`, 8, h - 29);
+      octx.fillStyle = "rgba(255,255,255,.85)";
       octx.fillText(`pinch ${p.pinchDist.toFixed(2)}  scala ${pinchMinSeen.toFixed(2)}-${pinchMaxSeen.toFixed(2)}`, 8, h - 18);
       // "sporg" e' il numero che separa pugno e pinch: sotto 0.12 pugno,
       // sopra 0.25 pinch, in mezzo zona morta.
@@ -448,6 +455,47 @@
     track.push({ x: lm[9].x, s: handScale(lm), t: now, kind: p.kind });
     while (track.length && now - track[0].t > SWIPE_MS) track.shift();
 
+    /* --- scorrimento a due dita: NON richiede l'armamento ---
+       Trattato PRIMA del gate: la posa "due dita" è deliberata e distinta, e lo
+       scorrimento è innocuo, quindi alzi due dita e scorri senza il passo
+       "palmo aperto per armare". Si ENTRA con due dita ferme un istante e ci si
+       RESTA finché non apri la mano (rilascio) o passi al pinch: mentre muovi,
+       che le dita sfarfallino (sfocatura) non conta più — era il motivo per cui
+       scendendo veniva letto come pugno e non scorreva. */
+    if (scrolling) {
+      if (p.kind === "open" || p.kind === "pinch") {
+        scrolling = false;                  // rilascio deliberato
+        filtroScroll.reset();
+        lastAction = now;                   // non far scattare swipe/finestra al rilascio
+        onState({ armed, hint: "" });
+        // niente return: questo fotogramma prosegue (può iniziare l'armamento)
+      } else {
+        const yFilt = filtroScroll.filtra(lm[9].y, now);
+        const dyPalmi = (yFilt - scrollRifY) / Math.max(handScale(lm), 1e-6);
+        // Rotellina: positivo = su. Mano in basso (y cresce) -> pagina giù.
+        const unita = Math.round(-dyPalmi * SCROLL_GAIN);
+        if (Math.abs(unita) >= SCROLL_MIN_UNITS && now - lastScrollAt >= SCROLL_MIN_MS) {
+          scrollRifY = yFilt;               // consuma solo il movimento inviato
+          lastScrollAt = now;
+          onEvent({ action: "scroll", value: unita });
+          onState({ armed, hint: unita < 0 ? "scorro giù" : "scorro su" });
+        }
+        return p;                           // scorrendo: niente pinch/pugno/swipe
+      }
+    } else if (p.kind === "two") {
+      // Entrata: due dita chiare tenute ferme per un istante (evita gli scatti).
+      if (!scrollDa) scrollDa = now;
+      if (now - scrollDa >= SCROLL_ENTRA_MS) {
+        scrolling = true;
+        scrollDa = 0;
+        scrollRifY = filtroScroll.filtra(lm[9].y, now);   // riferimento iniziale
+        onState({ armed, hint: "scorrimento" });
+      }
+      return p;                             // durante l'attesa d'entrata, nient'altro
+    } else {
+      scrollDa = 0;                         // la posa si è interrotta: reset dell'entrata
+    }
+
     // --- armamento con il palmo aperto tenuto fermo ---
     if (!armed) {
       if (p.kind === "open") {
@@ -497,47 +545,6 @@
     }
     // Uscita dal pinch: il filtro riparte pulito al prossimo aggancio.
     if (pinching) { pinching = false; filtroPinch.reset(); }
-
-    /* --- scorrimento a due dita (modalità appiccicosa) ---
-       Il difetto della prima versione: chiedere la posa "due dita" a OGNI
-       fotogramma. Muovendo la mano in basso le dita si sfocano e si accorciano,
-       il riconoscitore leggeva "pugno", lo scroll non partiva e a volte scattava
-       lo spostamento finestra. Qui invece si ENTRA in modalità scorrimento con
-       due dita ferme un istante, e poi ci si RESTA finché non apri la mano
-       (rilascio) o passi al pinch: mentre muovi, che le dita sfarfallino non
-       conta più. Durante lo scorrimento pugno e swipe sono sospesi. */
-    if (scrolling) {
-      if (p.kind === "open" || p.kind === "pinch") {
-        scrolling = false;                  // rilascio deliberato
-        filtroScroll.reset();
-        lastAction = now;                   // non far scattare swipe/finestra al rilascio
-        onState({ armed: true });
-        return p;
-      }
-      const yFilt = filtroScroll.filtra(lm[9].y, now);
-      const dyPalmi = (yFilt - scrollRifY) / Math.max(handScale(lm), 1e-6);
-      // Rotellina: positivo = su. Mano in basso (y cresce) -> pagina giù.
-      const unita = Math.round(-dyPalmi * SCROLL_GAIN);
-      if (Math.abs(unita) >= SCROLL_MIN_UNITS && now - lastScrollAt >= SCROLL_MIN_MS) {
-        scrollRifY = yFilt;                 // consuma solo il movimento inviato
-        lastScrollAt = now;
-        onEvent({ action: "scroll", value: unita });
-        onState({ armed: true, hint: unita < 0 ? "scorro giù" : "scorro su" });
-      }
-      return p;                             // scorrendo: niente pugno né swipe
-    }
-    // Entrata: due dita chiare tenute ferme per un istante (evita gli scatti).
-    if (p.kind === "two") {
-      if (!scrollDa) scrollDa = now;
-      if (now - scrollDa >= SCROLL_ENTRA_MS) {
-        scrolling = true;
-        scrollDa = 0;
-        scrollRifY = filtroScroll.filtra(lm[9].y, now);   // riferimento iniziale
-        onState({ armed: true, hint: "scorrimento" });
-      }
-      return p;                             // durante l'attesa d'entrata, nient'altro
-    }
-    scrollDa = 0;                           // la posa si è interrotta: reset dell'entrata
 
     /* --- presa: mano aperta che si chiude -> finestra sull'altro schermo ---
        Il conteggio del pugno NON viene azzerato da un fotogramma incerto: solo
@@ -739,6 +746,15 @@
          mentre stai gesticolando, cioe' quando ogni millisecondo serve alla
          mano. */
       try { aggiornaPresenza(now, fonte, !!lm); } catch (e) { /* mai fermare il ciclo */ }
+    }
+
+    /* Lo scorrimento cade se la mano sparisce (anche da disarmato, dato che è
+       auto-armante): così al ritorno riparte da un riferimento fresco invece di
+       fare un salto. */
+    if (scrolling && now - lastSeen > SCROLL_TIMEOUT_MS) {
+      scrolling = false;
+      filtroScroll.reset();
+      scrollDa = 0;
     }
 
     // Disarmo automatico: se la mano sparisce, i comandi si spengono.

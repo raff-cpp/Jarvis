@@ -288,6 +288,21 @@ def _ws_loop(conn):
         send({"type": "done"})
 
 
+_ultimo_log_scroll = 0.0
+
+
+def _log_gesto_scroll(value):
+    """Traccia in console, con parsimonia (~2 volte al secondo), che i gesti di
+    scorrimento ARRIVANO al server. Serve a diagnosticare: se non compare nulla
+    il gesto non parte (webcam/posa); se compare ma la pagina non si muove, il
+    problema e' il bersaglio (tieni il mouse sopra l'app da scorrere)."""
+    global _ultimo_log_scroll
+    now = time.time()
+    if now - _ultimo_log_scroll > 0.5:
+        _ultimo_log_scroll = now
+        print(f"[jarvis][gesto] scorrimento {value}")
+
+
 def _handle_gesture(msg):
     """Esegue un gesto. Ritorna un testo per la HUD, o None se silenzioso.
 
@@ -304,6 +319,7 @@ def _handle_gesture(msg):
 
         if action == "scroll":
             tools.scroll_wheel(int(value))
+            _log_gesto_scroll(value)         # diagnostica parsimoniosa in console
             return None                      # continuo: non intasare il registro
 
         if action == "media":
