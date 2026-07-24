@@ -1037,6 +1037,31 @@ def mouse_scroll(passi=3, orizzontale=False):
     return _ok(message=f"Scorrimento di {n} tacche.")
 
 
+def scroll_wheel(amount, orizzontale=False):
+    """Un SINGOLO evento di rotellina, di quantita arbitraria (120 = una tacca).
+
+    Pensato per lo scorrimento continuo guidato dai gesti: a differenza di
+    mouse_scroll non fa un ciclo con pause (che bloccherebbe il thread e
+    scatterebbe a tacche), ma invia un solo delta proporzionale al movimento
+    della mano. I browser e le app moderne accettano delta piu piccoli di una
+    tacca, quindi lo scorrimento risulta fluido e fine. Convenzione: positivo =
+    su. Non muove il puntatore: lo scorrimento va alla finestra sotto il cursore
+    (con l'opzione di Windows attiva) o a quella a fuoco.
+    """
+    try:
+        a = int(amount)
+    except (TypeError, ValueError):
+        return _err("Quantita di scorrimento non valida.")
+    if a == 0:
+        return _ok(message="Nessuno scorrimento.")
+    # Tetto per singolo evento: uno scatto anomalo dei landmark non deve
+    # catapultare la pagina a fondo articolo.
+    a = max(-2400, min(2400, a))
+    if not _invia(_HWHEEL if orizzontale else _WHEEL, a):
+        return _err("Windows ha rifiutato lo scorrimento.")
+    return _ok(message=f"Scorrimento {a}.")
+
+
 def mouse_drag(x1, y1, x2, y2, tasto="left"):
     """Trascina da un punto all'altro tenendo premuto."""
     tasto = (tasto or "left").lower()

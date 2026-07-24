@@ -302,6 +302,10 @@ def _handle_gesture(msg):
             tools.set_volume(level=int(value))
             return None                      # continuo: non intasare il registro
 
+        if action == "scroll":
+            tools.scroll_wheel(int(value))
+            return None                      # continuo: non intasare il registro
+
         if action == "media":
             verso = "next" if value == "next" else "previous"
             esito = tools.media_control(verso)

@@ -173,7 +173,17 @@ disarma da solo.
 |---|---|
 | **Pinch** pollice-indice (altre dita chiuse) | volume, come una manopola |
 | **Mano aperta**, swipe ← / → | traccia precedente / successiva |
+| **Due dita** (indice + medio), su / giù | scorre la pagina, come sul trackpad |
 | **Chiudi la mano** a pugno e tienila | finestra sull'altro schermo |
+
+Lo **scorrimento** è pensato per leggere: alza due dita (indice e medio, le altre
+chiuse) e muovi la mano in alto o in basso — la pagina segue, in proporzione a
+quanto muovi, con **mano giù = pagina giù** (come la rotellina del mouse). È una
+posa deliberata, distinta da tutte le altre, quindi non parte per sbaglio mentre
+gesticoli. Per un articolo lungo si "riprende" la presa come sul trackpad: riapri
+la mano, riportala in alto e rialza le due dita. Lo scorrimento va alla finestra
+**sotto il puntatore** (o a quella a fuoco), quindi tieni il mouse sopra
+l'articolo che stai leggendo.
 
 Lo spostamento finestra **non è più uno swipe**: chiudere la mano è una
 transizione di stato, non un movimento, quindi non soffre della sfocatura che

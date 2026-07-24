@@ -10,6 +10,7 @@
      pinch pollice-indice        -> volume (continuo, come una manopola)
      mano aperta, swipe L/R      -> traccia precedente / successiva
      mano aperta che si chiude   -> finestra sull'altro schermo
+     due dita (indice+medio) su/giu -> scorre la pagina (continuo, come sul trackpad)
 */
 (() => {
   "use strict";
@@ -121,6 +122,22 @@
   const GRAB_COOLDOWN = 1400;   // pausa fra due spostamenti
   const GRAB_TOLLERANZA_MS = 450; // fotogrammi incerti tollerati senza azzerare
 
+  /* --- Scorrimento a due dita ---
+     Posa "indice+medio distesi" (come le due dita sul trackpad): DELIBERATA e
+     distinta da tutte le altre, quindi non frainticabile. Muovi la mano in alto
+     o in basso e la pagina segue, in proporzione. E' relativo: la pagina scorre
+     di quanto muovi la mano, e per un articolo lungo si "riprende" la presa
+     riaprendo la mano e ricominciando, esattamente come sul trackpad.
+     Convenzione: mano giu -> pagina giu (come la rotellina del mouse). */
+  const SCROLL_GAIN = 1100;     // unita di rotellina per "palmo" di corsa verticale
+  const SCROLL_STABLE_MS = 120; // la posa deve reggere un attimo prima di muovere
+  const SCROLL_MIN_MS = 30;     // fino a ~33 invii al secondo: fluido
+  const SCROLL_MIN_UNITS = 8;   // sotto questa quantita non inviamo: assorbe il tremolio
+  /* Filtro One-Euro sull' altezza della mano: fermo da immobile (niente deriva
+     mentre leggi tenendo la posa), reattivo quando muovi davvero. */
+  const SCROLL_CUTOFF = 1.0;
+  const SCROLL_BETA = 4.0;
+
   /* --- Puntatore (modalità olografica) ---
      Un binario SEPARATO dai gesti discreti qui sopra: quando è attivo, la punta
      dell'indice diventa un cursore e il pinch (pollice-indice uniti) è "afferra
@@ -150,6 +167,7 @@
   let lastSeen = 0;
   let lastAction = 0;
   const filtroPinch = unEuro(PINCH_CUTOFF, PINCH_BETA, 1.0);
+  const filtroScroll = unEuro(SCROLL_CUTOFF, SCROLL_BETA, 1.0);
   /* Puntatore: due filtri One-Euro (uno per asse) per un cursore fermo da
      immobile ma reattivo in corsa. Isteresi del pinch in `pinchGiu`. */
   const filtroPx = unEuro(1.6, 9.0, 1.0);
@@ -162,6 +180,10 @@
   let lastVolAt = 0;
   let track = [];               // storico posizione del palmo: {x, s, t, kind}
   let pinching = false;
+  let scrolling = false;        // scorrimento a due dita in corso
+  let scrollRifY = 0;           // altezza mano di riferimento (filtrata), in coord. immagine
+  let scrollDa = 0;             // da quando la posa "due dita" regge
+  let lastScrollAt = 0;         // ultimo invio, per limitare la frequenza
   let spostamentoCorrente = 0;  // swipe in corso, in palmi (per il riscontro)
   let apertaFinoA = 0;          // fino a quando vale "la mano era aperta"
   let pugnoDa = 0;              // da quando il pugno è chiuso
@@ -236,6 +258,14 @@
 
     /* 1) MANO APERTA per prima: è inequivocabile e non va contesa a nessuno. */
     if (nDistese >= 3) return { kind: "open", ...m };
+
+    /* 1-bis) DUE DITA: indice e medio distesi, anulare e mignolo ripiegati.
+       Posa deliberata (nessuno la tiene per caso mentre legge) e distinta da
+       tutte le altre — la mano aperta ne ha almeno tre, il pinch tiene il medio
+       giù, il pugno non ne ha nessuna. La dedichiamo allo scorrimento. Va PRIMA
+       del pinch: qui il medio è disteso, quindi non può essere un pinch, ma
+       mettendola davanti l'intento resta esplicito. */
+    if (dist_[0] && dist_[1] && !dist_[2] && !dist_[3]) return { kind: "two", ...m };
 
     /* 2) PINCH prima del pugno: ora è la SPORGENZA a separarli, e un pugno non
           ne ha, quindi questo ordine è sicuro e libera il pugno dal doversi
@@ -459,6 +489,34 @@
     // Uscita dal pinch: il filtro riparte pulito al prossimo aggancio.
     if (pinching) { pinching = false; filtroPinch.reset(); }
 
+    /* --- due dita: scorrimento continuo della pagina ---
+       Relativo e proporzionale: la pagina segue la mano. Il primo fotogramma
+       della posa fissa solo il riferimento (nessun salto), poi ogni spostamento
+       verticale diventa scorrimento. Sotto soglia non inviamo e non spostiamo il
+       riferimento, così un movimento lento si accumula invece di perdersi. */
+    if (p.kind === "two") {
+      const yFilt = filtroScroll.filtra(lm[9].y, now);
+      if (!scrolling) {
+        scrolling = true;
+        scrollDa = now;
+        scrollRifY = yFilt;                 // riferimento: da qui misuriamo
+        onState({ armed: true, hint: "scorrimento" });
+        return p;
+      }
+      if (now - scrollDa < SCROLL_STABLE_MS) { scrollRifY = yFilt; return p; }
+      const dyPalmi = (yFilt - scrollRifY) / Math.max(handScale(lm), 1e-6);
+      // Rotellina: positivo = su. Mano in basso (y cresce) -> pagina giù.
+      const unita = Math.round(-dyPalmi * SCROLL_GAIN);
+      if (Math.abs(unita) >= SCROLL_MIN_UNITS && now - lastScrollAt >= SCROLL_MIN_MS) {
+        scrollRifY = yFilt;                 // consuma solo il movimento inviato
+        lastScrollAt = now;
+        onEvent({ action: "scroll", value: unita });
+        onState({ armed: true, hint: unita < 0 ? "scorro giù" : "scorro su" });
+      }
+      return p;
+    }
+    if (scrolling) { scrolling = false; filtroScroll.reset(); }
+
     /* --- presa: mano aperta che si chiude -> finestra sull'altro schermo ---
        Il conteggio del pugno NON viene azzerato da un fotogramma incerto: solo
        una mano chiaramente aperta lo annulla, oppure l'assenza prolungata del
@@ -665,6 +723,8 @@
     if (armed && now - lastSeen > DISARM_MS) {
       armed = false;
       filtroPinch.reset();
+      filtroScroll.reset();
+      scrolling = false;
       apertaFinoA = 0;
       pugnoDa = 0;
       ultimoPugno = 0;
@@ -773,6 +833,8 @@
     preavvisato = false; erroriVolto = 0; prossimoControlloVolto = 0;
     voltoVisibile = false;
     filtroPinch.reset();
+    filtroScroll.reset();
+    scrolling = false;
     apertaFinoA = 0;
     pugnoDa = 0;
     ultimoPugno = 0;
