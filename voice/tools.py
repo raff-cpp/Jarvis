@@ -1037,16 +1037,45 @@ def mouse_scroll(passi=3, orizzontale=False):
     return _ok(message=f"Scorrimento di {n} tacche.")
 
 
+_WM_MOUSEWHEEL = 0x020A
+_WM_MOUSEHWHEEL = 0x020E
+_prototipi_scroll = False
+
+
+def _prepara_prototipi_scroll():
+    """Fissa i tipi delle API Win usate dallo scorrimento mirato.
+
+    Senza restype/argtypes espliciti, su Windows a 64 bit ctypes tratta l'HWND
+    come int a 32 bit e lo tronca: WindowFromPoint tornerebbe una finestra
+    sbagliata. Si fa una volta sola.
+    """
+    global _prototipi_scroll
+    if _prototipi_scroll:
+        return
+    u = ctypes.windll.user32
+    u.WindowFromPoint.restype = ctypes.c_void_p
+    u.WindowFromPoint.argtypes = [_POINT]
+    u.PostMessageW.restype = ctypes.c_int
+    u.PostMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint,
+                               ctypes.c_size_t, ctypes.c_ssize_t]
+    _prototipi_scroll = True
+
+
 def scroll_wheel(amount, orizzontale=False):
     """Un SINGOLO evento di rotellina, di quantita arbitraria (120 = una tacca).
 
     Pensato per lo scorrimento continuo guidato dai gesti: a differenza di
     mouse_scroll non fa un ciclo con pause (che bloccherebbe il thread e
     scatterebbe a tacche), ma invia un solo delta proporzionale al movimento
-    della mano. I browser e le app moderne accettano delta piu piccoli di una
-    tacca, quindi lo scorrimento risulta fluido e fine. Convenzione: positivo =
-    su. Non muove il puntatore: lo scorrimento va alla finestra sotto il cursore
-    (con l'opzione di Windows attiva) o a quella a fuoco.
+    della mano. I browser e le app accettano delta piu piccoli di una tacca,
+    quindi lo scorrimento risulta fluido e fine. Convenzione: positivo = su.
+
+    Bersaglio: la finestra SOTTO IL PUNTATORE, non quella a fuoco. Mentre usi i
+    gesti guardi la HUD della webcam, che cosi' ha il fuoco: con un evento
+    hardware globale la pagina dietro non si muoverebbe. Mandando invece il
+    messaggio della rotellina alla finestra sotto il cursore, scorri l'articolo
+    che stai guardando basta tenerci sopra il mouse. Se non si puo' mirare,
+    si ripiega sull'evento hardware (finestra a fuoco / sotto il cursore).
     """
     try:
         a = int(amount)
@@ -1057,6 +1086,23 @@ def scroll_wheel(amount, orizzontale=False):
     # Tetto per singolo evento: uno scatto anomalo dei landmark non deve
     # catapultare la pagina a fondo articolo.
     a = max(-2400, min(2400, a))
+
+    try:
+        _prepara_prototipi_scroll()
+        u = ctypes.windll.user32
+        pt = _POINT()
+        if u.GetCursorPos(ctypes.byref(pt)):
+            hwnd = u.WindowFromPoint(pt)
+            if hwnd:
+                delta = a & 0xFFFF                    # short con segno nel WORD alto
+                wparam = (delta << 16) & 0xFFFFFFFF
+                lparam = ((pt.y & 0xFFFF) << 16) | (pt.x & 0xFFFF)
+                msg = _WM_MOUSEHWHEEL if orizzontale else _WM_MOUSEWHEEL
+                if u.PostMessageW(hwnd, msg, wparam, lparam):
+                    return _ok(message=f"Scorrimento {a} (finestra sotto il cursore).")
+    except Exception:
+        pass                                          # qualunque intoppo: ripiego sotto
+
     if not _invia(_HWHEEL if orizzontale else _WHEEL, a):
         return _err("Windows ha rifiutato lo scorrimento.")
     return _ok(message=f"Scorrimento {a}.")
