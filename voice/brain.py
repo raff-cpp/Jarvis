@@ -86,15 +86,16 @@ def _is_transient(e):
             or "overloaded" in s or "'code': 500" in s or "internal error" in s)
 
 
-def _is_thinking_error(e):
-    """Il modello ha rifiutato la configurazione del ragionamento (400).
+def _is_bad_request(e):
+    """Richiesta rifiutata dal modello (400 INVALID_ARGUMENT).
 
-    Non tutti i modelli accettano lo stesso modo di regolare il 'thinking': se
-    la rifiutano, la disattiviamo per la sessione invece di far fallire il turno.
+    L'unico parametro fuori standard che aggiungiamo e' il budget di ragionamento,
+    e diversi modelli 'lite' lo rifiutano con un 400 dal messaggio generico (non
+    cita 'thinking'). Quando capita lo togliamo per quel modello e riproviamo,
+    invece di far fallire il turno.
     """
-    s = str(e).lower()
-    return "thinking" in s and ("invalid" in s or "400" in s
-                                or "not supported" in s or "unsupported" in s)
+    s = str(e)
+    return ("INVALID_ARGUMENT" in s or "'code': 400" in s or "code: 400" in s)
 
 # Budget di ragionamento. Vuoto = default del modello; 0 = disattivato (piu veloce).
 _BUDGET = os.environ.get("JARVIS_THINKING_BUDGET", "").strip()
@@ -430,9 +431,11 @@ class Jarvis:
         self.contents = []
         self._decls = _declarations() if self.has_key else []
         self._search_on = self.has_key and WEB_SEARCH in ("auto", "on")
-        # Alcuni modelli non accettano il budget di ragionamento: se capita, lo
-        # spegniamo per la sessione (vedi _call_with_search_fallback).
+        # Il budget di ragionamento serve solo ai modelli che "pensano" (i flash):
+        # i 'lite' non lo accettano (400). Lo passiamo quindi solo a chi lo regge,
+        # e ricordiamo qui i modelli che lo rifiutano, per non riprovarci.
         self._thinking_on = True
+        self._thinking_bad = set()
 
     # ---- entry point -------------------------------------------------------
     def process(self, text, on_status=None, on_action=None, on_say=None):
@@ -482,7 +485,7 @@ class Jarvis:
             lines.append("Cosa ricordi del signore dalle sessioni precedenti:\n" + mem)
         return "\n\n".join(lines)
 
-    def _config(self):
+    def _config(self, model=""):
         tool_list = [types.Tool(function_declarations=self._decls)]
         if self._search_on:
             tool_list.append(types.Tool(google_search=types.GoogleSearch()))
@@ -496,12 +499,22 @@ class Jarvis:
             # Il ciclo dei tool lo guidiamo noi: serve per la HUD e per le conferme.
             "automatic_function_calling": types.AutomaticFunctionCallingConfig(disable=True),
         }
-        if _BUDGET and self._thinking_on:
+        if self._thinking_supported(model):
             try:
                 cfg["thinking_config"] = types.ThinkingConfig(thinking_budget=int(_BUDGET))
             except ValueError:
                 pass
         return types.GenerateContentConfig(**cfg)
+
+    def _thinking_supported(self, model):
+        """Il budget di ragionamento va passato solo a chi lo accetta.
+
+        Serve un budget configurato e non disattivato; il modello non dev'essere
+        un 'lite' (non pensano e rifiutano il parametro con un 400) e non deve
+        averlo gia rifiutato in questa sessione.
+        """
+        return (bool(_BUDGET) and self._thinking_on
+                and "lite" not in model and model not in self._thinking_bad)
 
     def _model_chain(self):
         """Il modello configurato per primo, poi i fallback (senza duplicati)."""
@@ -528,17 +541,13 @@ class Jarvis:
         model = model or self.model
         if quota.known(model):
             return                        # gia noto oggi: niente richiesta sprecata
-        cfg = {"max_output_tokens": 8}
-        if _BUDGET and self._thinking_on:
-            try:
-                cfg["thinking_config"] = types.ThinkingConfig(thinking_budget=int(_BUDGET))
-            except ValueError:
-                pass
+        # Richiesta la piu spoglia possibile: niente thinking (i 'lite' lo
+        # rifiutano) ne strumenti. Ci interessa solo se risponde o da' 429.
         t0 = time.perf_counter()
         try:
             self.client.models.generate_content(
                 model=model, contents="ping",
-                config=types.GenerateContentConfig(**cfg))
+                config=types.GenerateContentConfig(max_output_tokens=8))
             quota.record_success(model, time.perf_counter() - t0)
             print(f"[jarvis] sonda quota: {model} disponibile.")
         except Exception as e:
@@ -549,13 +558,15 @@ class Jarvis:
 
     def _raw_call(self, model):
         return self.client.models.generate_content(
-            model=model, contents=self.contents, config=self._config())
+            model=model, contents=self.contents, config=self._config(model))
 
     def _call_with_search_fallback(self, model):
         """Una chiamata al modello dato, con due reti di sicurezza.
 
-        - Se il modello rifiuta il budget di ragionamento, lo disattiviamo per la
-          sessione e riproviamo: non tutti accettano lo stesso modo di regolarlo.
+        - Se il modello rifiuta la richiesta (400) e gli stavamo passando il
+          budget di ragionamento, lo ricordiamo come "senza budget" e riproviamo
+          senza: i modelli 'lite' non lo accettano, ma altri si, quindi il veto
+          vale solo per quel modello.
         - Se fallisce con la ricerca web attiva, riprova una volta senza: alcuni
           modelli non combinano ricerca e strumenti, o la ricerca ha quota
           separata. Se la colpa non era la ricerca, ripristina.
@@ -563,10 +574,10 @@ class Jarvis:
         try:
             return self._raw_call(model)
         except Exception as first:
-            if _BUDGET and self._thinking_on and _is_thinking_error(first):
-                self._thinking_on = False
-                print("[jarvis] budget di ragionamento non accettato da questo "
-                      "modello: uso il predefinito per la sessione.")
+            if self._thinking_supported(model) and _is_bad_request(first):
+                self._thinking_bad.add(model)
+                print(f"[jarvis] {model} non accetta il budget di ragionamento: "
+                      "lo disattivo per questo modello.")
                 return self._raw_call(model)
             if not (self._search_on and WEB_SEARCH == "auto"):
                 raise
