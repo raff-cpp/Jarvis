@@ -184,19 +184,21 @@ segue, in proporzione, con **mano giù = pagina giù** (come la rotellina). Apri
 mano per rilasciare. Per un articolo lungo si "riprende" la presa come sul
 trackpad: apri la mano, risali, rialza le due dita.
 
-Due cose importanti perché scorra **qualsiasi** app (Chrome, Spotify, PDF…):
-
-- Lo scorrimento è una **rotellina hardware vera** (`SendInput`), non un comando
-  "finto": le app basate su Chromium (Chrome, Spotify, Edge) ignorano gli eventi
-  rotellina sintetici, quindi serve quello reale. Così scorrono tutte.
-- Una rotellina reale va alla **finestra sotto il puntatore** (con l'opzione di
-  Windows «scorri le finestre inattive al passaggio del mouse», attiva di
-  default) o a quella a fuoco: **tieni il mouse sopra l'app che vuoi scorrere**.
+**Quale finestra scorre:** quella **in primo piano**, cioè l'app che stai usando
+(Chrome, Spotify, un PDF…). Se in primo piano c'è Jarvis stesso, per esempio
+perché hai appena cliccato GESTI sulla HUD, scorre la finestra subito sotto:
+l'app che usavi prima. Il mouse non serve. Lo scorrimento è una **rotellina
+hardware vera** (`SendInput`), l'unico input che accettano tutte le app, e
+Windows consegna la rotellina alla finestra sotto il puntatore: per questo,
+all'inizio di ogni passata, Jarvis porta il **puntatore** su un punto visibile
+della finestra da scorrere. Durante la passata non lo tocca più, quindi se usi
+il mouse non ve lo contendete. Quando cambia la finestra che scorre, la HUD lo
+scrive: **«Scorro: …»**.
 
 Se non parte, guarda l'anteprima: il numero **`due`** deve superare la soglia (si
-illumina di verde) e comparire **SCROLL ON**. In console appare `[jarvis][gesto]
-scorrimento …` a ogni movimento: se compare ma la pagina non si muove, sposta il
-mouse sull'app da scorrere.
+illumina di verde) e comparire **SCROLL ON**. In console ogni gesto lascia una
+riga `[jarvis][gesto] scorrimento … -> <finestra>`, che dice dove è finito o
+perché non è riuscito.
 
 Lo spostamento finestra **non è più uno swipe**: chiudere la mano è una
 transizione di stato, non un movimento, quindi non soffre della sfocatura che

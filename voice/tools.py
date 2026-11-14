@@ -1037,8 +1037,171 @@ def mouse_scroll(passi=3, orizzontale=False):
     return _ok(message=f"Scorrimento di {n} tacche.")
 
 
+# ---- Scorrimento a gesti: QUALE finestra scorre ----------------------------
+#
+# La rotellina di Windows, quella vera come quella simulata con SendInput, va
+# alla finestra SOTTO IL PUNTATORE ("scorri le finestre inattive al passaggio
+# del mouse", attiva di default), non a quella che stai guardando. Con i gesti
+# pero' il mouse non lo tocchi: resta dove l'hai lasciato, di solito sulla HUD
+# dove hai appena cliccato GESTI. Misurato su Chrome: il gesto veniva
+# riconosciuto, l'evento partiva, Windows lo accettava... e scorreva la HUD,
+# mentre la pagina restava ferma. Da qui il "non funziona per nulla".
+#
+# Regola: scorre la finestra IN PRIMO PIANO, quella che stai usando. Se in primo
+# piano c'e' Jarvis stesso (HUD o console), scorre quella subito sotto, cioe'
+# l'app che usavi prima di cliccare sulla HUD. All'inizio di ogni passata il
+# puntatore viene portato su un punto VISIBILE di quella finestra, una volta
+# sola: non lo si riporta indietro a ogni evento, cosi' se nel frattempo usi il
+# mouse non ci si contende il puntatore.
+
+_GA_ROOT = 2
+_GWL_EXSTYLE = -20
+_WS_EX_ESCLUSI = 0x00000080 | 0x00000020 | 0x08000000   # TOOLWINDOW | TRANSPARENT | NOACTIVATE
+_DWMWA_CLOAKED = 14
+# Finestre della shell: desktop, barre delle applicazioni, Start e riquadri.
+_CLASSI_SHELL = {"Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd",
+                 "Windows.UI.Core.CoreWindow", "XamlExplorerHostIslandWindow",
+                 "NotifyIconOverflowWindow", "TopLevelWindowForOverflowXamlIsland"}
+_SESSIONE_SCROLL_S = 0.8     # pausa oltre cui il prossimo evento apre una nuova passata
+_scroll_lock = threading.Lock()
+_scroll_sessione = {"hwnd": None, "fg": None, "t": 0.0}
+_api_scroll_cache = None
+
+
+def _api_scroll():
+    """Prototipi ctypes delle API usate per scegliere la finestra da scorrere.
+
+    Su una libreria user32 PROPRIA: gli argtypes fissati qui non devono cambiare
+    il comportamento di ctypes.windll.user32, condivisa con il resto del modulo.
+    Senza restype espliciti, a 64 bit ctypes troncherebbe gli HWND a 32 bit.
+    """
+    global _api_scroll_cache
+    if _api_scroll_cache is not None:
+        return _api_scroll_cache
+    from ctypes import wintypes as wt
+    u = ctypes.WinDLL("user32", use_last_error=True)
+
+    def proto(nome, res, *args):
+        f = getattr(u, nome)
+        f.restype, f.argtypes = res, list(args)
+        return f
+
+    enum_proc = ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
+    api = {
+        "wt": wt,
+        "EnumProc": enum_proc,
+        "GetForegroundWindow": proto("GetForegroundWindow", wt.HWND),
+        "GetAncestor": proto("GetAncestor", wt.HWND, wt.HWND, wt.UINT),
+        "WindowFromPoint": proto("WindowFromPoint", wt.HWND, wt.POINT),
+        "GetCursorPos": proto("GetCursorPos", wt.BOOL, ctypes.POINTER(wt.POINT)),
+        "SetCursorPos": proto("SetCursorPos", wt.BOOL, ctypes.c_int, ctypes.c_int),
+        "IsWindow": proto("IsWindow", wt.BOOL, wt.HWND),
+        "IsWindowVisible": proto("IsWindowVisible", wt.BOOL, wt.HWND),
+        "IsIconic": proto("IsIconic", wt.BOOL, wt.HWND),
+        "GetWindowTextW": proto("GetWindowTextW", ctypes.c_int, wt.HWND, wt.LPWSTR, ctypes.c_int),
+        "GetClassNameW": proto("GetClassNameW", ctypes.c_int, wt.HWND, wt.LPWSTR, ctypes.c_int),
+        "GetClientRect": proto("GetClientRect", wt.BOOL, wt.HWND, ctypes.POINTER(wt.RECT)),
+        "ClientToScreen": proto("ClientToScreen", wt.BOOL, wt.HWND, ctypes.POINTER(wt.POINT)),
+        "EnumWindows": proto("EnumWindows", wt.BOOL, enum_proc, wt.LPARAM),
+        "GetWindowLong": proto("GetWindowLongPtrW" if hasattr(u, "GetWindowLongPtrW")
+                               else "GetWindowLongW", ctypes.c_ssize_t, wt.HWND, ctypes.c_int),
+    }
+    try:
+        dwm = ctypes.WinDLL("dwmapi")
+        f = dwm.DwmGetWindowAttribute
+        f.restype = ctypes.c_long
+        f.argtypes = [wt.HWND, wt.DWORD, ctypes.c_void_p, wt.DWORD]
+        api["DwmGetWindowAttribute"] = f
+    except (OSError, AttributeError):
+        api["DwmGetWindowAttribute"] = None
+    _api_scroll_cache = api
+    return api
+
+
+def _testo_finestra(api, h, classe=False):
+    buf = ctypes.create_unicode_buffer(256)
+    (api["GetClassNameW"] if classe else api["GetWindowTextW"])(h, buf, 256)
+    return buf.value
+
+
+def _nascosta_da_dwm(api, h):
+    """Finestre 'visibili' per Windows ma non a schermo: app UWP sospese,
+    finestre di altri desktop virtuali."""
+    f = api["DwmGetWindowAttribute"]
+    if not f:
+        return False
+    v = ctypes.c_uint(0)
+    return f(h, _DWMWA_CLOAKED, ctypes.byref(v), ctypes.sizeof(v)) == 0 and v.value != 0
+
+
+def _scorribile(api, h):
+    """True se h e' una finestra d'applicazione che ha senso scorrere."""
+    if not h or not api["IsWindowVisible"](h) or api["IsIconic"](h):
+        return False
+    if _testo_finestra(api, h, classe=True) in _CLASSI_SHELL:
+        return False
+    # Jarvis stesso: la HUD (Chrome) e la console hanno entrambe questo titolo.
+    if "J.A.R.V.I.S." in _testo_finestra(api, h):
+        return False
+    if api["GetWindowLong"](h, _GWL_EXSTYLE) & _WS_EX_ESCLUSI:
+        return False
+    if _nascosta_da_dwm(api, h):
+        return False
+    r = api["wt"].RECT()
+    api["GetClientRect"](h, ctypes.byref(r))
+    return r.right - r.left >= 100 and r.bottom - r.top >= 80
+
+
+def _finestra_da_scorrere(api):
+    """La finestra in primo piano; se e' Jarvis (o la shell), quella subito sotto."""
+    fg = api["GetForegroundWindow"]()
+    if fg:
+        fg = api["GetAncestor"](fg, _GA_ROOT) or fg
+    if _scorribile(api, fg):
+        return fg
+    ordine = []                     # EnumWindows le elenca dall'alto verso il basso
+
+    def raccogli(h, _l):
+        ordine.append(h)
+        return True
+    api["EnumWindows"](api["EnumProc"](raccogli), 0)
+    inizio = ordine.index(fg) + 1 if fg in ordine else 0
+    for h in ordine[inizio:]:
+        if _scorribile(api, h):
+            return h
+    return None
+
+
+def _radice_sotto(api, x, y):
+    """La finestra di primo livello che riceverebbe la rotellina nel punto (x, y)."""
+    h = api["WindowFromPoint"](api["wt"].POINT(x, y))
+    return api["GetAncestor"](h, _GA_ROOT) if h else None
+
+
+def _punto_visibile(api, h):
+    """Un punto della finestra h non coperto da altre finestre, il piu' vicino
+    possibile al centro (dove di solito c'e' il contenuto da scorrere).
+    None se la finestra e' coperta del tutto."""
+    wt = api["wt"]
+    r = wt.RECT()
+    api["GetClientRect"](h, ctypes.byref(r))
+    o = wt.POINT(0, 0)
+    api["ClientToScreen"](h, ctypes.byref(o))
+    w, alt = r.right - r.left, r.bottom - r.top
+    if w <= 0 or alt <= 0:
+        return None
+    passi = [i / 8 for i in range(1, 8)]          # griglia 7x7, centro compreso
+    for fx, fy in sorted(((fx, fy) for fx in passi for fy in passi),
+                         key=lambda p: (p[0] - 0.5) ** 2 + (p[1] - 0.5) ** 2):
+        x, y = o.x + int(w * fx), o.y + int(alt * fy)
+        if _radice_sotto(api, x, y) == h:
+            return x, y
+    return None
+
+
 def scroll_wheel(amount, orizzontale=False):
-    """Un SINGOLO evento di rotellina, di quantita arbitraria (120 = una tacca).
+    """Un SINGOLO evento di rotellina, di quantita arbitraria (120 = una tacca),
+    destinato alla finestra che stai usando.
 
     Pensato per lo scorrimento continuo guidato dai gesti: a differenza di
     mouse_scroll non fa un ciclo con pause (che bloccherebbe il thread e
@@ -1046,12 +1209,12 @@ def scroll_wheel(amount, orizzontale=False):
     della mano. Le app accettano delta piu piccoli di una tacca, quindi lo
     scorrimento risulta fluido e fine. Convenzione: positivo = su.
 
-    Usa SendInput (rotellina HARDWARE reale), non un messaggio "postato": Chrome,
-    Spotify e in generale le app basate su Chromium IGNORANO gli eventi rotellina
-    sintetici inviati con PostMessage, e rispondono solo all'input vero. Windows
-    consegna la rotellina alla finestra SOTTO IL PUNTATORE (con l'opzione «scorri
-    le finestre inattive al passaggio del mouse», attiva di default) oppure a
-    quella a fuoco: in pratica, tieni il mouse sopra l'app che vuoi scorrere.
+    Usa SendInput (rotellina HARDWARE reale): e' l'unico input che ogni app
+    accetta, Chromium compreso. La finestra la sceglie _finestra_da_scorrere
+    (vedi il commento qui sopra), e all'inizio di ogni passata il puntatore
+    viene portato su di lei, perche' e' li' che Windows consegna la rotellina.
+    Ritorna anche quale finestra sta scorrendo (hwnd e titolo, per il riscontro
+    sulla HUD) e se questo evento ha aperto una nuova passata.
     """
     try:
         a = int(amount)
@@ -1062,9 +1225,35 @@ def scroll_wheel(amount, orizzontale=False):
     # Tetto per singolo evento: uno scatto anomalo dei landmark non deve
     # catapultare la pagina a fondo articolo.
     a = max(-2400, min(2400, a))
-    if not _invia(_HWHEEL if orizzontale else _WHEEL, a):
-        return _err("Windows ha rifiutato lo scorrimento.")
-    return _ok(message=f"Scorrimento {a}.")
+
+    api = _api_scroll()
+    with _scroll_lock:
+        ora = time.monotonic()
+        fg = api["GetForegroundWindow"]()
+        s = _scroll_sessione
+        h = s["hwnd"]
+        continua = (h and ora - s["t"] < _SESSIONE_SCROLL_S and s["fg"] == fg
+                    and api["IsWindow"](h) and api["IsWindowVisible"](h)
+                    and not api["IsIconic"](h))
+        if not continua:
+            h = _finestra_da_scorrere(api)
+            s["hwnd"] = None
+            if not h:
+                return _err("Nessuna finestra da scorrere: apri l'app da leggere.")
+            p = api["wt"].POINT()
+            api["GetCursorPos"](ctypes.byref(p))
+            if _radice_sotto(api, p.x, p.y) != h:
+                punto = _punto_visibile(api, h)
+                if not punto:
+                    return _err("La finestra da scorrere e' coperta da altre finestre.")
+                api["SetCursorPos"](*punto)
+            s["hwnd"], s["fg"] = h, fg
+        s["t"] = ora
+        if not _invia(_HWHEEL if orizzontale else _WHEEL, a):
+            return _err("Windows ha rifiutato lo scorrimento.")
+    titolo = _testo_finestra(api, h)[:80] or _testo_finestra(api, h, classe=True)
+    return _ok(message=f"Scorrimento {a}: {titolo}.", finestra=titolo, hwnd=h,
+               nuova=not continua)
 
 
 def mouse_drag(x1, y1, x2, y2, tasto="left"):

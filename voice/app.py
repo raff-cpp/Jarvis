@@ -289,18 +289,40 @@ def _ws_loop(conn):
 
 
 _ultimo_log_scroll = 0.0
+_ultima_finestra_scroll = None   # ultima finestra annunciata sulla HUD
+_ultimo_errore_scroll = 0.0
 
 
-def _log_gesto_scroll(value):
+def _log_gesto_scroll(value, esito):
     """Traccia in console, con parsimonia (~2 volte al secondo), che i gesti di
-    scorrimento ARRIVANO al server. Serve a diagnosticare: se non compare nulla
-    il gesto non parte (webcam/posa); se compare ma la pagina non si muove, il
-    problema e' il bersaglio (tieni il mouse sopra l'app da scorrere)."""
+    scorrimento ARRIVANO al server e DOVE finiscono. Se non compare nulla il
+    gesto non parte (webcam/posa); altrimenti la riga dice quale finestra sta
+    scorrendo, o perche' non si e' potuto."""
     global _ultimo_log_scroll
     now = time.time()
     if now - _ultimo_log_scroll > 0.5:
         _ultimo_log_scroll = now
-        print(f"[jarvis][gesto] scorrimento {value}")
+        dove = (esito.get("finestra") if esito.get("status") == "ok"
+                else "NON RIUSCITO: " + esito.get("message", ""))
+        print(f"[jarvis][gesto] scorrimento {value} -> {dove}")
+
+
+def _riscontro_scroll(esito):
+    """Testo per la HUD: solo quando cambia la finestra che scorre, o quando non
+    si riesce a scorrere (al massimo ogni 5 s). A ogni evento sarebbe una
+    valanga: il gesto ne manda fino a 30 al secondo."""
+    global _ultima_finestra_scroll, _ultimo_errore_scroll
+    if esito.get("status") != "ok":
+        _ultima_finestra_scroll = None      # al prossimo successo, ridillo
+        now = time.time()
+        if now - _ultimo_errore_scroll > 5:
+            _ultimo_errore_scroll = now
+            return "Scorrimento non riuscito: " + esito.get("message", "")
+        return None
+    if esito.get("hwnd") and esito["hwnd"] != _ultima_finestra_scroll:
+        _ultima_finestra_scroll = esito["hwnd"]
+        return "Scorro: " + (esito.get("finestra") or "finestra in primo piano")
+    return None
 
 
 def _handle_gesture(msg):
@@ -318,9 +340,11 @@ def _handle_gesture(msg):
             return None                      # continuo: non intasare il registro
 
         if action == "scroll":
-            tools.scroll_wheel(int(value))
-            _log_gesto_scroll(value)         # diagnostica parsimoniosa in console
-            return None                      # continuo: non intasare il registro
+            # Prima l'esito veniva ignorato: se la rotellina finiva sulla
+            # finestra sbagliata, o Windows la rifiutava, non lo sapeva nessuno.
+            esito = tools.scroll_wheel(int(value))
+            _log_gesto_scroll(value, esito)  # diagnostica parsimoniosa in console
+            return _riscontro_scroll(esito)  # una riga sulla HUD, non una valanga
 
         if action == "media":
             verso = "next" if value == "next" else "previous"
