@@ -108,7 +108,7 @@ Jarvis/
   AVVIA-JARVIS.cmd     Avvio con doppio click
   jarvis.cmd           Entry point da terminale
   memoria.json         Memoria a lungo termine (non committata)
-  todo.md  note.md  promemoria.md
+  todo.md  note.md  promemoria.md  To-do, note e promemoria (non committati)
   scripts/             Dispatcher e script PowerShell
   voice/
     app.py             Server Flask + WebSocket
