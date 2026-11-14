@@ -10,6 +10,7 @@ risponde con un errore e la HUD ripiega sulla voce del browser.
 import asyncio
 import os
 import threading
+import time
 
 try:
     import edge_tts
@@ -76,6 +77,10 @@ FRASI_FISSE = [
     "Sono a sua disposizione, signore.",
     "Certamente.",
     "Non sono riuscito a completare la richiesta. Controlla la console per il dettaglio.",
+    # Identica a brain.MSG_RETE. Va preparata ADESSO, a rete funzionante: quando
+    # servira' la rete sara' giu' e non si potrebbe piu' sintetizzarla.
+    "Non riesco a raggiungere i server di Google: la connessione o il DNS "
+    "non rispondono. Riprova tra qualche secondo.",
 ]
 
 
@@ -97,7 +102,20 @@ def synthesize(text, voice=None, rate=None, pitch=None):
     if pronto is not None:
         return pronto
 
-    audio = asyncio.run(_synth(text, k[1], k[2], k[3]))
+    # Un secondo tentativo se a fallire e' la RETE (OSError: comprende il DNS che
+    # non risolve, getaddrinfo failed). Su questa rete il DNS del router inciampa
+    # ogni tanto, e un singolo inciampo faceva parlare Jarvis con la voce del
+    # browser. Un rifiuto del servizio (es. 403) non e' di rete: non si ritenta.
+    for attesa in (0.5, None):
+        try:
+            audio = asyncio.run(_synth(text, k[1], k[2], k[3]))
+            break
+        except OSError as e:
+            # TimeoutError e' un OSError, ma arriva dopo molti secondi:
+            # ritentarlo raddoppierebbe un'attesa gia' lunga.
+            if attesa is None or isinstance(e, TimeoutError):
+                raise
+            time.sleep(attesa)
     with _cache_lock:
         if len(_cache) >= _CACHE_MAX:          # sfoltisce le più vecchie
             for vecchia in list(_cache)[:_CACHE_MAX // 4]:

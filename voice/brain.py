@@ -10,6 +10,7 @@ import base64
 import datetime
 import json
 import os
+import socket
 import threading
 import time
 import re
@@ -20,6 +21,11 @@ try:
 except ImportError:
     genai = None
     types = None
+
+try:
+    import httpx                  # il trasporto dell'SDK: serve a riconoscerne gli errori di rete
+except ImportError:
+    httpx = None
 
 import intents
 import pilota
@@ -72,6 +78,48 @@ class QuotaError(Exception):
 
 class BusyError(Exception):
     """I server di Google sono momentaneamente sovraccarichi (503)."""
+
+
+class NetworkError(Exception):
+    """Google non raggiungibile: DNS che non risolve, connessione rifiutata o caduta."""
+
+
+# Frase detta quando la rete non lascia passare la richiesta nemmeno dopo i
+# tentativi. Identica a quella in speech.FRASI_FISSE, che la prepara in anticipo:
+# a rete giu' la sintesi vocale non si potrebbe fare.
+MSG_RETE = ("Non riesco a raggiungere i server di Google: la connessione o il DNS "
+            "non rispondono. Riprova tra qualche secondo.")
+
+# Attese fra i tentativi quando a fallire e' la RETE (secondi): circa 5 s in
+# tutto, poi ci si arrende con un messaggio chiaro.
+_ATTESE_RETE = (0.6, 1.5, 3.0)
+
+
+def _is_network(e):
+    """Errore di RETE: Google non e' stato raggiunto, o la risposta si e' persa.
+
+    Diverso da 429 e 503, che sono RISPOSTE di Google. Il caso tipico qui e'
+    "[Errno 11001] getaddrinfo failed": il DNS non ha risolto il nome del server.
+    Misurato su questa rete: il DNS del router restituisce ogni tanto pacchetti
+    corrotti (2-4% delle domande) e ogni volta il turno falliva in 0,00 s.
+    L'SDK solleva httpx.ConnectError e non ritenta da solo.
+    """
+    if httpx is not None and isinstance(e, httpx.TransportError):
+        return True
+    if isinstance(e, (socket.gaierror, ConnectionError)):
+        return True
+    s = str(e).lower()
+    return "getaddrinfo failed" in s or "name resolution" in s
+
+
+def _network_retryable(e):
+    """Si puo' ritentare SUBITO? Si' per gli errori che arrivano in fretta (DNS,
+    connessione rifiutata o caduta); no per i timeout di lettura e scrittura, che
+    hanno gia' fatto aspettare a lungo: ritentarli raddoppierebbe l'attesa."""
+    if httpx is not None and isinstance(e, (httpx.ReadTimeout, httpx.WriteTimeout,
+                                            httpx.PoolTimeout)):
+        return False
+    return True
 
 
 def _is_quota(e):
@@ -574,6 +622,11 @@ class Jarvis:
         try:
             return self._raw_call(model)
         except Exception as first:
+            # Un inciampo della rete non c'entra con la ricerca web: senza questa
+            # uscita, se la rete tornava proprio al secondo tentativo, la ricerca
+            # veniva spenta per tutta la sessione per una colpa non sua.
+            if _is_network(first):
+                raise
             if self._thinking_supported(model) and _is_bad_request(first):
                 self._thinking_bad.add(model)
                 print(f"[jarvis] {model} non accetta il budget di ragionamento: "
@@ -591,6 +644,26 @@ class Jarvis:
                   "disattivata per questa sessione.")
             return resp
 
+    def _call_resilient(self, model):
+        """La chiamata al modello, ritentata se a fallire e' la RETE e non Google.
+
+        Un DNS che inciampa un attimo non deve far fallire la richiesta: la
+        domanda non e' mai arrivata a Google, quindi riprovare e' sicuro e non
+        consuma quota. Si riprova sullo STESSO modello: tutti i modelli stanno
+        sullo stesso server, cambiarlo non aggirerebbe un problema di rete.
+        """
+        for attesa in _ATTESE_RETE + (None,):
+            try:
+                return self._call_with_search_fallback(model)
+            except Exception as e:
+                if not _is_network(e):
+                    raise
+                if attesa is None or not _network_retryable(e):
+                    raise NetworkError(str(e)) from e
+                print(f"[jarvis] Google non raggiungibile ({redact(e)}): "
+                      f"riprovo fra {attesa:.1f}s.")
+                time.sleep(attesa)
+
     def _generate(self):
         """Chiama Gemini scorrendo la catena di modelli. Un modello che esaurisce la
         quota (429) o e sovraccarico (503) viene saltato e si prova il successivo, che
@@ -606,8 +679,10 @@ class Jarvis:
             for model in self._model_chain():
                 t0 = time.perf_counter()
                 try:
-                    resp = self._call_with_search_fallback(model)
+                    resp = self._call_resilient(model)
                 except Exception as e:
+                    if isinstance(e, NetworkError):
+                        raise                 # gia' ritentato: e' la rete, non il modello
                     if _is_quota(e):
                         quota.record_exhausted(model)
                         last_quota = e
@@ -693,6 +768,12 @@ class Jarvis:
             say(msg)
             print("[jarvis] modelli sovraccarichi (503): " + redact(e))
             return msg
+        except NetworkError as e:
+            st("error")
+            self._drop_incomplete_turn()
+            say(MSG_RETE)
+            print("[jarvis] Google non raggiungibile nemmeno dopo i tentativi: " + redact(e))
+            return MSG_RETE
         except Exception as e:
             st("error")
             # Un messaggio piu utile del generico "errore tecnico".

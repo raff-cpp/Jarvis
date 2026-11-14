@@ -2,3 +2,6 @@ google-genai>=1.0
 flask>=3.0
 flask-sock>=0.7
 python-dotenv>=1.0
+# Voce neurale del server. Almeno la 7.3.1: con le precedenti il servizio
+# Microsoft risponde 403 e Jarvis ripiega sulla voce del browser.
+edge-tts>=7.3.1
