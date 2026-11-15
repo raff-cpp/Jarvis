@@ -24,6 +24,11 @@ browser, riconoscimento vocale, sintesi vocale italiana e un cervello **Gemini**
 
 ## Come si parla con lui
 
+Con l'interruttore **DAL VIVO** acceso (lo è di default) ogni modo qui sotto apre
+una **conversazione dal vivo**: Jarvis risponde a voce in circa un secondo e puoi
+continuare a parlargli senza ripetere «Jarvis». Spento, si torna alla modalità
+classica, un comando alla volta. Vedi [Conversazione dal vivo](#conversazione-dal-vivo).
+
 | Modo | Come |
 |---|---|
 | **Scorciatoia globale** | **Ctrl+Alt+J** da qualunque applicazione: **avvia** Jarvis se è spento, altrimenti ne porta la HUD in primo piano col microfono già armato. |
@@ -57,6 +62,81 @@ Esempi: *«che ore sono»*, *«com'e messo il PC»*, *«apri VS Code»*, *«alza
 che si chiamano fattura»*, *«ricordami di chiamare Marco domani alle nove»*,
 *«che tempo fa a Milano»*, *«ricordati che preferisco Python»*.
 
+## Conversazione dal vivo
+
+Nella modalità classica ogni scambio passa da tre tappe: il browser trascrive
+la frase, il modello risponde con un testo, la sintesi vocale lo legge. Sono
+4-5 secondi, e la voce resta sintetica.
+
+Dal vivo il microfono va dritto a **`gemini-3.8-live`**, che ascolta e **parla da
+solo**: la risposta comincia circa **0,7 secondi** dopo la fine della tua frase
+(misurato, con tanto di strumento chiamato in mezzo), con una voce naturale.
+È una conversazione vera:
+
+- **parli liberamente**: dopo «Jarvis» non serve ripeterlo a ogni frase;
+- **lo interrompi parlandogli sopra**, come a una persona. «Basta» lo zittisce
+  senza chiudere la conversazione;
+- **si chiude da sola** dopo 20 secondi di silenzio, oppure quando lo congedi
+  (*«grazie, è tutto»*). Per chiuderla subito, clicca il microfono;
+- **ricorda**: se riapri una conversazione entro mezz'ora, Jarvis riprende da dove
+  eravate (*«e adesso alzalo ancora»*). **RESET** lo fa ripartire da zero.
+
+Gli **strumenti sono gli stessi** della modalità classica, conferme comprese: le
+azioni distruttive continuano a chiedere il tuo «sì». *«Guarda lo schermo»*
+funziona anche qui.
+
+| Cosa | Come si comporta dal vivo |
+|---|---|
+| **Voce** | Il menu **Voce…** mostra le 30 voci di Gemini: scegliendone una, Jarvis si presenta con quella nuova. Predefinita **Charon**. |
+| **Avvisi** | Download completati, batteria e promemoria arrivati durante una conversazione li dice lui, con la sua voce, appena c'è silenzio. |
+| **Pilota automatico** | Mentre usa il PC il microfono non va a Google: il racconto delle mosse, che esce dalle casse con la voce classica, potrebbe passare per te e annullarlo. «Basta» lo sente il browser, e lo ferma come sempre. |
+| **Se qualcosa va storto** | Quota finita, rete o modello assenti: la HUD lo dice e la tua richiesta passa al cervello classico, così non si perde. Dopo un errore di quota la modalità dal vivo resta in pausa per dieci minuti. |
+
+**Eco dalle casse.** La HUD usa l'eliminazione dell'eco del browser, che toglie dal
+microfono la voce di Jarvis. Se con le casse alte Jarvis si interrompe da solo
+(si sente parlare e crede che sia tu), usa le cuffie oppure metti
+`JARVIS_LIVE_INTERRUZIONI=off`: mentre parla il microfono tace, e lo interrompi
+cliccando il microfono.
+
+**Quota.** `gemini-3.8-live` è gratuito sul piano free, ma Google non pubblica i
+limiti gratuiti della modalità dal vivo. Una conversazione breve usa 5-9 mila
+token: le istruzioni e l'elenco degli strumenti contano a ogni turno.
+
+**Privacy.** L'audio va a Google solo durante una conversazione, cioè quando in
+alto compare **DAL VIVO**. Fra una conversazione e l'altra ascolta solo il
+riconoscimento del browser per la parola «Jarvis», come prima.
+
+### Sotto il cofano
+
+```
+microfono → HUD (PCM 16 kHz) → WebSocket /ws → voice/live.py → Gemini Live
+Gemini Live → voice/live.py (PCM 24 kHz) → WebSocket /ws → HUD → casse
+```
+
+- **La chiave non arriva al browser nemmeno qui**: la HUD parla solo con il server
+  di Jarvis, che parla con Google. L'audio viaggia in frame binari sullo stesso
+  WebSocket dei comandi.
+- **Microfono e voce girano in AudioWorklet** (`web/live-worklet.js`), nel thread
+  audio del browser: la voce non scatta quando la HUD è impegnata a disegnare, e
+  quando lo interrompi la coda si svuota all'istante.
+- **L'SDK Live è asincrono, il server Flask no**: le conversazioni vivono su un
+  ciclo asyncio in un thread dedicato, comandato con poche funzioni thread-safe.
+- **Il WebSocket della HUD ora ha un lucchetto sugli invii.** Ci scrivono più
+  thread (comandi, avvisi, la voce dal vivo molte volte al secondo) e la
+  compressione dei messaggi ha uno stato condiviso: due invii intrecciati
+  corromperebbero lo stream.
+- **Collegamenti lunghi**: Google chiude ogni collegamento dopo circa 10 minuti
+  (avvisa prima). Jarvis si ricollega con la *maniglia di ripresa*, senza perdere la
+  conversazione, e lo fa solo dopo un momento di silenzio: lo stato della sessione
+  si salva poco dopo la fine di un turno, e ricollegarsi nell'istante esatto aveva
+  fatto dimenticare l'ultimo scambio. La compressione del contesto toglie il limite
+  di 15 minuti delle sessioni audio.
+- **Lo schermo**: l'immagine va **dentro** la risposta dello strumento. Mandata
+  come fotogramma video separato, il modello dal vivo la ignorava (provato). È lo
+  stesso PNG del pilota: una variante JPEG, più leggera, viene bloccata da Windows
+  Defender come «contenuto dannoso», perché cattura schermo più compressione JPEG è
+  lo schema dei programmi che rubano schermate.
+
 ## Cosa sa fare
 
 - **Sistema** — stato di CPU/RAM/dischi/batteria/rete, processi attivi, terminare
@@ -77,7 +157,8 @@ che si chiamano fattura»*, *«ricordami di chiamare Marco domani alle nove»*,
 
 - **La chiave API non arriva mai al browser.** Vive solo in `voice\.env`, letta dal
   processo Python. La pagina web riceve unicamente `has_key: true/false` e il nome del
-  modello; ogni chiamata a Gemini parte dal server.
+  modello; ogni chiamata a Gemini parte dal server, anche dal vivo: la HUD manda
+  l'audio al server di Jarvis, mai direttamente a Google.
 - **`.env` è in `.gitignore`** e non finisce nei commit.
 - Il server ascolta **solo su `127.0.0.1`**: non è raggiungibile dalla rete locale.
 - Le azioni **distruttive** (cancellare file, terminare processi, spegnere, riavviare,
@@ -113,11 +194,13 @@ Jarvis/
   voice/
     app.py             Server Flask + WebSocket
     brain.py           Cervello Gemini, definizione dei tool
+    live.py            Conversazione dal vivo (Gemini Live)
     tools.py           Implementazione degli strumenti di sistema
     modelli.py         Elenca i modelli Gemini disponibili sulla tua chiave
     .env               Chiave API (NON committato — crealo tu)
     .env.example       Modello da copiare
     web/               HUD: index.html, style.css, app.js
+                       live.js, live-worklet.js  conversazione dal vivo
 ```
 
 ## Configurazione
@@ -131,6 +214,12 @@ In `voice\.env`:
 | `JARVIS_WEB_SEARCH` | `auto` | Ricerca web Google: `auto` la disattiva da sola se la chiave o il modello non la supportano |
 | `JARVIS_THINKING_BUDGET` | vuoto | Token di ragionamento. `0` = disattivato, risposte più rapide |
 | `JARVIS_PORT` | `8730` | Porta del server locale |
+| `JARVIS_LIVE` | `on` | Conversazione dal vivo disponibile (interruttore DAL VIVO sulla HUD) |
+| `JARVIS_LIVE_MODEL` | `gemini-3.8-live` | Modello dal vivo |
+| `JARVIS_LIVE_VOICE` | `Charon` | Voce dal vivo predefinita (si cambia anche dal menu Voce…) |
+| `JARVIS_LIVE_SILENZIO_S` | `20` | Secondi di silenzio prima che la conversazione si chiuda |
+| `JARVIS_LIVE_MEMORIA_MIN` | `30` | Entro quanti minuti una conversazione riprende la precedente (`0` = mai) |
+| `JARVIS_LIVE_INTERRUZIONI` | `on` | `off` = microfono muto mentre Jarvis parla, contro l'eco dalle casse |
 
 Per vedere quali modelli sono disponibili sulla tua chiave:
 
@@ -350,6 +439,10 @@ scorciatoia **non** interviene: meglio un secondo in più che un comando frainte
 Disattivabile con `JARVIS_FAST_INTENTS=off`.
 
 ## La voce
+
+Dal vivo parla con la voce di **Gemini** (vedi sopra). Le voci qui sotto restano
+per la modalità classica, per il racconto del pilota automatico e per gli avvisi
+fuori da una conversazione.
 
 Jarvis usa le **voci neurali Microsoft generate dal server** (`edge-tts`): stessa
 qualità su qualunque browser, e due voci maschili italiane vere.

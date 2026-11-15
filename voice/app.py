@@ -29,6 +29,7 @@ import speech                    # noqa: E402
 import tools                     # noqa: E402
 import watcher                   # noqa: E402
 import brain                      # noqa: E402
+import live                       # noqa: E402
 from brain import Jarvis, redact  # noqa: E402
 
 WEB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
@@ -41,6 +42,44 @@ jarvis = Jarvis()
 # Una sola conversazione condivisa: serializza i comandi cosi due richieste
 # concorrenti non si intrecciano nella stessa cronologia.
 _brain_lock = threading.Lock()
+
+class Canale:
+    """Una HUD collegata, con gli invii serializzati.
+
+    Sullo stesso socket scrivono piu' thread: quello del WebSocket, gli avvisi,
+    e dalla conversazione dal vivo l'audio di Jarvis, molte volte al secondo.
+    simple-websocket non protegge gli invii concorrenti e comprime i messaggi
+    (permessage-deflate), cioe' ha uno stato condiviso: due invii intrecciati
+    corromperebbero lo stream e il browser chiuderebbe la connessione. Il
+    lucchetto mette tutti in fila.
+    """
+
+    def __init__(self, conn):
+        self.conn = conn
+        self.aperto = True
+        self._lock = threading.Lock()
+
+    def _invia(self, dato):
+        if not self.aperto:
+            return False
+        try:
+            with self._lock:
+                self.conn.send(dato)
+            return True
+        except Exception:
+            self.aperto = False
+            return False
+
+    def send_text(self, testo):
+        return self._invia(testo)
+
+    def send_json(self, obj):
+        return self._invia(json.dumps(obj))
+
+    def send_bytes(self, dati):
+        # bytes, non bytearray: simple-websocket manderebbe un bytearray come testo.
+        return self._invia(bytes(dati))
+
 
 # Connessioni HUD aperte: servono per spingere messaggi dal server al browser
 # (finora il traffico andava solo nell'altro verso).
@@ -59,10 +98,9 @@ def _broadcast(obj):
     with _clients_lock:
         morte = []
         for c in _clients:
-            try:
-                c.send(data)
+            if c.send_text(data):
                 consegnati += 1
-            except Exception:
+            else:
                 morte.append(c)
         for c in morte:
             _clients.discard(c)
@@ -70,7 +108,18 @@ def _broadcast(obj):
 
 
 def _annuncia(testo):
-    """Fa parlare Jarvis di sua iniziativa. Ritorna True se qualcuno ha sentito."""
+    """Fa parlare Jarvis di sua iniziativa. Ritorna True se qualcuno ha sentito.
+
+    Durante una conversazione dal vivo l'avviso lo dice il modello stesso, con
+    la sua voce, appena c'e' silenzio: niente seconda voce sovrapposta.
+    """
+    if live.annuncia(testo):
+        return True
+    return _annuncia_hud(testo)
+
+
+def _annuncia_hud(testo):
+    """Avviso pronunciato dalla HUD con la voce classica."""
     return _broadcast({"type": "announce", "text": testo}) > 0
 
 
@@ -87,9 +136,12 @@ def index():
 
 @app.route("/api/info")
 def info():
-    # Espone solo booleani e il nome del modello: MAI la chiave.
-    return jsonify({"has_key": jarvis.has_key, "model": jarvis.model,
-                    "server_tts": speech.available})
+    # Espone solo booleani e nomi di modello: MAI la chiave.
+    dati = {"has_key": jarvis.has_key, "model": jarvis.model,
+            "server_tts": speech.available}
+    dati.update(live.info())
+    dati["live"] = live.disponibile(jarvis)
+    return jsonify(dati)
 
 
 @app.route("/api/models")
@@ -108,9 +160,12 @@ def models():
 
 @app.route("/api/voices")
 def voices():
-    """Voci neurali disponibili lato server (qualita molto superiore al browser)."""
+    """Voci disponibili: quelle neurali del server (modalita' classica) e
+    quelle di Gemini per la conversazione dal vivo."""
+    dal_vivo = {"live_default": live.voce_valida(None),
+                "live_voices": live.elenco_voci() if live.disponibile(jarvis) else []}
     if not speech.available:
-        return jsonify({"voices": []})
+        return jsonify({"voices": [], **dal_vivo})
     etichette = {
         "diego": "Diego — maschile, autorevole",
         "giuseppe": "Giuseppe — maschile, morbido",
@@ -119,7 +174,8 @@ def voices():
     }
     return jsonify({"default": speech.DEFAULT_VOICE,
                     "voices": [{"id": k, "label": etichette.get(k, k)}
-                               for k in speech.VOICES]})
+                               for k in speech.VOICES],
+                    **dal_vivo})
 
 
 @app.route("/api/tts", methods=["POST"])
@@ -194,18 +250,25 @@ def stats():
 def reset():
     with _brain_lock:
         jarvis.reset()
+    # Anche la conversazione dal vivo riparte da zero, invece di riprendere
+    # la sessione precedente.
+    live.dimentica()
     return jsonify({"status": "ok"})
 
 
 @sock.route("/ws")
 def ws(conn):
+    canale = Canale(conn)
     with _clients_lock:
-        _clients.add(conn)
+        _clients.add(canale)
     try:
-        _ws_loop(conn)
+        _ws_loop(canale)
     finally:
+        canale.aperto = False
         with _clients_lock:
-            _clients.discard(conn)
+            _clients.discard(canale)
+        # Finestra chiusa o ricaricata: la sua conversazione dal vivo finisce.
+        live.ferma(canale, "HUD scollegata")
 
 
 def _campo(msg, nome):
@@ -220,11 +283,18 @@ def _campo(msg, nome):
     return v.strip() if isinstance(v, str) else ""
 
 
-def _ws_loop(conn):
+def _ws_loop(canale):
+    conn = canale.conn
+    send = canale.send_json
     while True:
         raw = conn.receive()
         if raw is None:
             break
+        # I frame binari sono il microfono della conversazione dal vivo
+        # (PCM 16 kHz): vanno dritti alla sua sessione, senza altro lavoro.
+        if isinstance(raw, (bytes, bytearray)):
+            live.audio(canale, bytes(raw))
+            continue
         try:
             msg = json.loads(raw)
         except (ValueError, TypeError):
@@ -232,11 +302,10 @@ def _ws_loop(conn):
         if not isinstance(msg, dict):
             continue
 
-        def send(obj):
-            try:
-                conn.send(json.dumps(obj))
-            except Exception:
-                pass
+        tipo = msg.get("type")
+        if tipo in ("live_start", "live_text", "live_stop"):
+            _gestisci_live(canale, tipo, msg)
+            continue
 
         # Posizione della mano per l'overlay delle finestre reali: la giriamo
         # subito al processo overlay, senza passare da nulla d'altro.
@@ -286,6 +355,26 @@ def _ws_loop(conn):
             # redact(): la chiave non deve finire nemmeno nei log di console.
             print("[jarvis] errore nel turno: " + redact(e), file=sys.stderr)
         send({"type": "done"})
+
+
+def _gestisci_live(canale, tipo, msg):
+    """Comandi della HUD per la conversazione dal vivo."""
+    sid = msg.get("sid")
+    sid = sid if isinstance(sid, int) and not isinstance(sid, bool) else 0
+    if tipo == "live_stop":
+        live.ferma(canale, _campo(msg, "reason") or "HUD", sid)
+        return
+    if not live.disponibile(jarvis):
+        canale.send_json({"type": "live_state", "state": "error", "kind": "spenta", "sid": sid,
+                          "message": "La conversazione dal vivo non è disponibile: "
+                                     "serve la chiave di Google AI Studio e JARVIS_LIVE=on."})
+        return
+    _segna_attivita()
+    testo = _campo(msg, "text")[:2000] or None
+    if tipo == "live_start":
+        live.avvia(jarvis, canale, testo, _campo(msg, "voice") or None, sid)
+    elif testo:
+        live.testo(canale, testo, sid)
 
 
 _ultimo_log_scroll = 0.0
@@ -653,7 +742,14 @@ _watcher = watcher.Watcher(_annuncia)
 
 # Il pilota automatico racconta ogni mossa PRIMA di compierla: e' cosi' che
 # puoi accorgerti in tempo che sta sbagliando e fermarlo con "basta".
-brain.NARRATORE = _annuncia
+# Sempre con la voce della HUD, anche dal vivo: mentre il pilota lavora il
+# modello dal vivo e' in attesa del risultato e non puo' parlare.
+brain.NARRATORE = _annuncia_hud
+
+# La conversazione dal vivo segnala che stai usando Jarvis (niente blocco per
+# assenza mentre parlate) e, se si chiude con avvisi non ancora detti, li
+# affida alla voce classica.
+live.configura(on_attivita=lambda: _segna_attivita(), ripiego_annuncio=_annuncia_hud)
 
 # Due strade portano al briefing (l'avvio del server e il tuo arrivo davanti
 # alla webcam): il lucchetto impedisce che partano insieme e lo dicano due volte.
@@ -739,6 +835,7 @@ def main():
 
     # Se il server muore con l'overlay aperto, non lasciare la HUD minimizzata.
     atexit.register(_overlay_stop)
+    atexit.register(live.chiudi_tutto)
 
     threading.Thread(target=_serve, daemon=True).start()
     # Prepara in anticipo l'audio delle frasi fisse: i comandi diretti diventano
@@ -768,6 +865,9 @@ def main():
         print("  Cervello: MODALITA LOCALE (nessuna API key)")
         print("  -> copia voice\\.env.example in voice\\.env e inserisci GEMINI_API_KEY")
         print("  -> la chiave si crea su https://aistudio.google.com/apikey")
+    if live.disponibile(jarvis):
+        print(f"  Dal vivo: {live.MODELLO}, voce {live.voce_valida(None)} "
+              "(interruttore DAL VIVO sulla HUD)")
     if PROATTIVO:
         print("  Iniziativa: attiva (download completati, batteria scarica)")
     print("  Chiudi questa finestra per fermare Jarvis.")

@@ -129,6 +129,11 @@
       <input type="checkbox" id="wakeword" checked>
       <span>Parola d'attivazione</span>
     </label>
+    <label class="toggle live-toggle" id="live-wrap" hidden
+           title="Conversazione dal vivo con Gemini: risposta immediata, voce naturale, lo puoi interrompere quando vuoi">
+      <input type="checkbox" id="live">
+      <span>Dal vivo</span>
+    </label>
     <select id="voice-select" class="voice-select" title="Voce di Jarvis">
       <option value="">Voce…</option>
     </select>
@@ -138,6 +143,7 @@
 
   <script src="gestures.js"></script>
   <script src="holo.js"></script>
+  <script src="live.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

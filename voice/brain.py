@@ -818,19 +818,28 @@ class Jarvis:
                 "message": esito["message"], "passi_compiuti": esito["passi"],
                 "cosa_ho_fatto": esito["diario"]}
 
-    def _run_tool(self, fc):
-        """Esegue uno strumento e costruisce la Part di risposta (testo o immagine)."""
-        fn = DISPATCH.get(fc.name)
-        args = dict(fc.args or {})
+    def esegui_strumento(self, name, args):
+        """Esegue uno strumento e ne restituisce il risultato grezzo (un dict).
+
+        Unico punto di esecuzione: lo usano sia il ciclo classico qui sotto sia
+        la conversazione dal vivo (live.py). Cosi' le due modalita' hanno gli
+        stessi strumenti e le stesse protezioni, conferme comprese.
+        """
+        fn = DISPATCH.get(name)
         t0 = time.perf_counter()
         try:
-            if fc.name == "use_computer":
+            if name == "use_computer":
                 out = self._pilota(args)
             else:
                 out = fn(args) if fn else {"status": "error", "message": "strumento sconosciuto"}
         except Exception as e:
             out = {"status": "error", "message": str(e)}
-        print(f"[jarvis][tempi] strumento {fc.name}: {time.perf_counter() - t0:.2f}s")
+        print(f"[jarvis][tempi] strumento {name}: {time.perf_counter() - t0:.2f}s")
+        return out
+
+    def _run_tool(self, fc):
+        """Esegue uno strumento e costruisce la Part di risposta (testo o immagine)."""
+        out = self.esegui_strumento(fc.name, dict(fc.args or {}))
 
         # Lo screenshot torna come immagine vera dentro il risultato, cosi Jarvis
         # la puo guardare invece di riceverne solo una descrizione.

@@ -12,6 +12,30 @@
   const wakeBox = document.getElementById("wakeword");
   const textInput = document.getElementById("text-input");
   const wakeHint = document.getElementById("wake-hint");
+  const liveBox = document.getElementById("live");
+  const liveWrap = document.getElementById("live-wrap");
+
+  /* ---------- Conversazione dal vivo: stato condiviso ----------
+     Il motore è in live.js; qui si decide QUANDO usarlo. Con l'interruttore
+     DAL VIVO acceso, tutto ciò che prima diventava un comando per il cervello
+     classico (parola d'attivazione, microfono, Ctrl+Alt+J, campo di testo)
+     apre invece una conversazione dal vivo. */
+  const LIVE_KEY = "jarvis-dal-vivo";
+  const VOICE_LIVE_KEY = "jarvis-voce-live";
+  let liveDisponibile = false;     // il server ha la chiave e JARVIS_LIVE=on
+  let liveSospesoFino = 0;         // dopo un errore di quota: classico per un po'
+  let liveTestoInAttesa = null;    // se il collegamento fallisce, va al classico
+  let pilotaLive = false;          // il pilota lavora: si ascolta solo "basta"
+  let liveVoices = [];
+  let liveDefault = "Charon";
+  let voceLive = localStorage.getItem(VOICE_LIVE_KEY) || "";
+  let liveInfo = null;
+
+  function modoLive() {
+    return liveDisponibile && liveBox.checked && Date.now() > liveSospesoFino && !!window.JarvisLive;
+  }
+  function liveAttiva() { return !!(window.JarvisLive && window.JarvisLive.isActive()); }
+  function liveSuona() { return !!(window.JarvisLive && window.JarvisLive.isPlaying()); }
 
   const STATE_TEXT = {
     boot: "AVVIO", idle: "IN ATTESA", listening: "IN ASCOLTO",
@@ -94,6 +118,8 @@
 
   function connect() {
     ws = new WebSocket("ws://" + location.host + "/ws");
+    // I frame binari sono la voce dal vivo di Jarvis (PCM 24 kHz).
+    ws.binaryType = "arraybuffer";
     ws.onopen = () => {
       retry = 0;
       if (booted) {
@@ -102,6 +128,9 @@
       }
     };
     ws.onclose = () => {
+      // Il server chiude la conversazione dal vivo insieme al socket: qui
+      // basta rimettere a posto l'interfaccia.
+      if (window.JarvisLive) window.JarvisLive.disconnesso();
       setState("error");
       caption.textContent = "Connessione persa. Riconnessione…";
       retry = Math.min(retry + 1, 6);
@@ -109,8 +138,16 @@
     };
     ws.onerror = () => { try { ws.close(); } catch (e) { /* gestito da onclose */ } };
     ws.onmessage = (ev) => {
+      if (typeof ev.data !== "string") {
+        if (window.JarvisLive) window.JarvisLive.onAudio(ev.data);
+        return;
+      }
       let m;
       try { m = JSON.parse(ev.data); } catch (e) { return; }
+      if (typeof m.type === "string" && m.type.startsWith("live_")) {
+        if (window.JarvisLive) window.JarvisLive.onMessage(m);
+        return;
+      }
       if (m.type === "status") {
         if (m.state !== "speaking") setState(m.state);
       } else if (m.type === "action") {
@@ -121,6 +158,11 @@
         speak(m.text);
       } else if (m.type === "wake") {
         // Scorciatoia globale premuta: apri il microfono già armato.
+        if (modoLive()) {
+          if (!liveAttiva()) avviaLive();
+          caption.textContent = "Sì, signore?";
+          return;
+        }
         shutUp();
         initViz();
         arm();
@@ -147,6 +189,12 @@
   }
 
   function goIdle() {
+    // A conversazione dal vivo aperta "libero" vuol dire: ti ascolto.
+    if (liveAttiva()) {
+      setState(liveSuona() ? "speaking" : "listening");
+      svuotaAnnunci();
+      return;
+    }
     setState("idle");
     svuotaAnnunci();          // ora che è libero, può dire ciò che aveva in serbo
     if (continuousBox.checked) startListen();
@@ -169,20 +217,33 @@
        in ascolto continuo il microfono è quasi sempre acceso, e gli annunci
        non uscirebbero mai. Che il microfono risenta la propria voce è già
        coperto dal filtro anti-eco. */
-    if (!annunci.length || processing || speaking) return;
+    // Né sopra la voce dal vivo: durante una conversazione arrivano qui solo
+    // le mosse del pilota automatico, e devono aspettare che Jarvis taccia.
+    if (!annunci.length || processing || speaking || liveSuona()) return;
     const testo = annunci.shift();
     addEntry(testo, "jarvis");
     speak(testo);
   }
 
+  /* Un comando: dal vivo se l'interruttore è acceso, altrimenti al cervello
+     classico come sempre. */
   function sendCommand(text) {
+    if (!text.trim()) return;
+    if (modoLive()) {
+      avviaLive(text.trim());
+      return;
+    }
+    sendCommandClassic(text);
+  }
+
+  function sendCommandClassic(text, giaMostrato) {
     if (!text.trim()) return;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       addEntry("Connessione al server non disponibile.", "sys");
       return;
     }
     disarm();
-    addEntry(text, "user");
+    if (!giaMostrato) addEntry(text, "user");
     processing = true;
     setState("thinking");
     caption.textContent = "Elaboro…";
@@ -221,8 +282,42 @@
     return s;
   }
 
+  function voceClassicaValida(value) {
+    if (!value || value.indexOf(":") < 0) return false;
+    const kind = value.slice(0, value.indexOf(":"));
+    const id = value.slice(value.indexOf(":") + 1);
+    if (kind === "server") return serverVoices.some((v) => v.id === id);
+    if (kind === "browser") return voices.some((v) => v.voiceURI === id);
+    return false;
+  }
+
   function rebuildVoiceMenu() {
+    /* La voce classica serve anche con la conversazione dal vivo accesa: legge
+       le mosse del pilota automatico e gli avvisi fuori conversazione. Si
+       sceglie quindi sempre, anche quando il menu mostra le voci dal vivo. */
+    const saved = localStorage.getItem(VOICE_KEY);
+    const fallback = serverVoices.length
+      ? "server:" + serverVoices[0].id
+      : (voices.length ? "browser:" + [...voices].sort((a, b) => scoreVoice(b) - scoreVoice(a))[0].voiceURI : "");
+    applyVoice(voceClassicaValida(saved) ? saved : fallback, false);
+
     voiceSelect.replaceChildren();
+
+    // Dal vivo: le voci di Gemini, una sola lista.
+    if (modoLive() && liveVoices.length) {
+      const g = document.createElement("optgroup");
+      g.label = "Voci dal vivo (Gemini)";
+      for (const v of liveVoices) {
+        const o = document.createElement("option");
+        o.value = "live:" + v.id;
+        o.textContent = v.label;
+        g.appendChild(o);
+      }
+      voiceSelect.appendChild(g);
+      if (!liveVoices.some((v) => v.id === voceLive)) voceLive = liveDefault;
+      voiceSelect.value = "live:" + voceLive;
+      return;
+    }
 
     // 1) Voci neurali del server: le migliori, in cima.
     if (serverVoices.length) {
@@ -251,13 +346,8 @@
       voiceSelect.appendChild(g);
     }
 
-    // Ripristina la scelta salvata, altrimenti la migliore disponibile.
-    const saved = localStorage.getItem(VOICE_KEY);
-    const valid = saved && [...voiceSelect.options].some((o) => o.value === saved);
-    const fallback = serverVoices.length
-      ? "server:" + serverVoices[0].id
-      : (voices.length ? "browser:" + [...voices].sort((a, b) => scoreVoice(b) - scoreVoice(a))[0].voiceURI : "");
-    applyVoice(valid ? saved : fallback, false);
+    // Mostra la scelta (salvata, altrimenti la migliore disponibile).
+    if (selected) voiceSelect.value = selected.kind + ":" + selected.id;
   }
 
   function applyVoice(value, save) {
@@ -265,7 +355,6 @@
     const [kind, id] = [value.slice(0, value.indexOf(":")), value.slice(value.indexOf(":") + 1)];
     selected = { kind, id };
     if (kind === "browser") voice = voices.find((v) => v.voiceURI === id) || null;
-    voiceSelect.value = value;
     if (save) localStorage.setItem(VOICE_KEY, value);
   }
 
@@ -279,8 +368,11 @@
     try {
       const r = await (await fetch("/api/voices")).json();
       serverVoices = r.voices || [];
+      liveVoices = r.live_voices || [];
+      if (r.live_default) liveDefault = r.live_default;
     } catch (e) { serverVoices = []; }
     rebuildVoiceMenu();
+    aggiornaCervello();
   }
 
   if ("speechSynthesis" in window) {
@@ -290,7 +382,19 @@
   loadServerVoices();
 
   voiceSelect.addEventListener("change", () => {
-    applyVoice(voiceSelect.value, true);
+    const scelta = voiceSelect.value;
+    if (scelta.startsWith("live:")) {
+      voceLive = scelta.slice(5);
+      localStorage.setItem(VOICE_LIVE_KEY, voceLive);
+      aggiornaCervello();
+      /* La voce si fissa all'apertura della conversazione: quella in corso si
+         chiude e se ne apre una nuova con la voce scelta, che si presenta.
+         È l'anteprima, come per le voci classiche. */
+      if (liveAttiva()) window.JarvisLive.stop("cambio voce");
+      avviaLive("Presentati al signore in una frase breve.", true);
+      return;
+    }
+    applyVoice(scelta, true);
     shutUp();
     speak("Sono a sua disposizione, signore.");   // anteprima immediata
   });
@@ -371,8 +475,9 @@
        dicendo "basta". È sicuro perché mentre parla l'unica azione ammessa è
        zittirlo: nessuna frase può diventare un comando, quindi un falso
        riconoscimento non può innescare il loop. Fuori dall'ascolto continuo il
-       microfono si spegne come prima. */
-    if (!continuousBox.checked) stopListen();
+       microfono si spegne come prima, tranne mentre il pilota lavora dentro una
+       conversazione dal vivo: lì "basta" deve poterlo fermare sempre. */
+    if (!continuousBox.checked && !pilotaLive) stopListen();
     rememberSpoken(text);       // per riconoscere la propria eco
     setState("speaking");
     caption.textContent = text;
@@ -385,7 +490,9 @@
     speakBrowser(text, gen);
   }
 
-  function shutUp() {
+  /* Zittisce la voce classica e basta. Aprire una conversazione dal vivo usa
+     questa e non shutUp(): non deve tirare il freno del pilota automatico. */
+  function zittisciVoceClassica() {
     speechGen++;                // invalida le frasi ancora in volo
     if (currentAudio) {
       try { currentAudio.pause(); } catch (e) { /* gia fermo */ }
@@ -393,6 +500,10 @@
     }
     if ("speechSynthesis" in window) speechSynthesis.cancel();
     speaking = false;
+  }
+
+  function shutUp() {
+    zittisciVoceClassica();
     /* "Basta" non deve zittire soltanto la sua voce: se il pilota automatico
        sta usando il computer, deve fermare anche le sue mani. E' la stessa
        parola per entrambe le cose perche' nel momento in cui vuoi fermarlo non
@@ -415,7 +526,7 @@
       listening = true;
       micGranted = true;
       micBtn.classList.add("active");
-      if (!processing && !speaking) setState("listening");
+      if (!processing && !speaking && !liveAttiva()) setState("listening");
     };
     recog.onerror = (e) => {
       listening = false;
@@ -428,10 +539,13 @@
     };
     recog.onend = () => {
       listening = false;
-      micBtn.classList.remove("active");
+      // A conversazione dal vivo aperta il microfono resta "acceso": ascolta lei.
+      micBtn.classList.toggle("active", liveAttiva());
       // In ascolto continuo il motore si ferma da solo: lo riavviamo.
-      // Anche mentre Jarvis parla, per poterlo interrompere a voce.
-      if (continuousBox.checked && !processing) {
+      // Anche mentre Jarvis parla, per poterlo interrompere a voce. Non durante
+      // una conversazione dal vivo (il microfono è suo), salvo mentre il
+      // pilota lavora: allora serve per sentire "basta".
+      if ((continuousBox.checked && !processing && !liveAttiva()) || pilotaLive) {
         setTimeout(startListen, 250);
       }
     };
@@ -520,6 +634,21 @@
   }
 
   function handleFinal(transcript) {
+    /* Conversazione dal vivo aperta: il microfono vero è suo, e il
+       riconoscimento del browser resta acceso solo mentre il pilota usa il PC.
+       Lì conta una cosa sola: "basta", che lo ferma. */
+    if (liveAttiva()) {
+      if (pilotaLive) {
+        const pulito = transcript.trim().replace(/[.,!?;:]+$/, "");
+        if (STOP_RE.test(pulito)) {
+          shutUp();                       // zittisce la voce e tira il freno
+          caption.textContent = "Fermo il pilota.";
+          addEntry("Pilota fermato.", "sys");
+        }
+      }
+      return;
+    }
+
     // Jarvis che risente se stesso: ignora, altrimenti si autoalimenta.
     if (isEcho(transcript)) return;
 
@@ -547,13 +676,16 @@
     if (!m) return;                       // rumore di fondo: ignora
     const after = transcript.slice(m.index + m[0].length).trim();
     if (after) sendCommand(after);        // "Jarvis, apri Firefox"
+    else if (modoLive()) avviaLive();     // solo "Jarvis": si apre la conversazione
     else arm();                           // solo "Jarvis": resta in ascolto del comando
   }
 
   function startListen() {
     if (!recog || listening || processing) return;
+    // Durante una conversazione dal vivo il microfono è suo (pilota a parte).
+    if (liveAttiva() && !pilotaLive) return;
     // Mentre parla si ascolta solo in modalità continua (per il "basta").
-    if (speaking && !continuousBox.checked) return;
+    if (speaking && !continuousBox.checked && !pilotaLive) return;
     try { recog.start(); } catch (e) { /* gia avviato */ }
   }
   function stopListen() {
@@ -561,6 +693,9 @@
   }
 
   micBtn.addEventListener("click", () => {
+    // Dal vivo il microfono apre e chiude la conversazione.
+    if (liveAttiva()) { window.JarvisLive.stop("microfono"); return; }
+    if (modoLive()) { avviaLive(); return; }
     if (speaking) { shutUp(); }          // interrompi Jarvis e ascolta
     if (listening) { stopListen(); disarm(); return; }
     initViz();
@@ -580,13 +715,16 @@
 
   textInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && textInput.value.trim()) {
-      shutUp();
+      // Dentro una conversazione dal vivo il testo si aggiunge e basta: niente
+      // freno al pilota, che magari sta lavorando proprio per questa.
+      if (!liveAttiva()) shutUp();
       sendCommand(textInput.value.trim());
       textInput.value = "";
     }
   });
 
   resetBtn.addEventListener("click", async () => {
+    if (liveAttiva()) window.JarvisLive.stop("reset");
     shutUp();
     try { await fetch("/api/reset", { method: "POST" }); } catch (e) { /* offline */ }
     log.replaceChildren();
@@ -603,6 +741,7 @@
      reattore disegnava un'onda finta. Agganciando l'audio del TTS il reattore
      pulsa sulle sillabe reali. */
   let audioCtx = null, vozAnalyser = null, vozFreq = null, voceAgganciata = false;
+  const liveFreq = new Uint8Array(64);     // analizzatori dal vivo: fftSize 128
 
   function collegaAnalisiVoce(audio) {
     try {
@@ -648,27 +787,35 @@
     const glow = getComputedStyle(body).getPropertyValue("--glow").trim() || "#35e0ff";
     const bars = 72, R = 175;
     /* Tre sorgenti, in ordine di priorità: la voce di Jarvis mentre parla, il
-       microfono mentre ascolta, l'animazione sintetica quando non c'è audio. */
-    const voce = speaking && voceAgganciata && vozAnalyser;
-    const live = !voce && analyser && listening;
-    if (voce) vozAnalyser.getByteFrequencyData(vozFreq);
-    else if (live) analyser.getByteFrequencyData(freq);
+       microfono mentre ascolta, l'animazione sintetica quando non c'è audio.
+       Dal vivo voce e microfono hanno analizzatori propri (in live.js). */
+    const analisiLive = liveAttiva() ? window.JarvisLive.analysers() : null;
+    const voceLive = analisiLive && liveSuona() && analisiLive.voice;
+    const micLive = analisiLive && !voceLive && analisiLive.mic;
+    const voce = !voceLive && speaking && voceAgganciata && vozAnalyser;
+    const micro = !voceLive && !voce && !micLive && analyser && listening;
+    if (voceLive) voceLive.getByteFrequencyData(liveFreq);
+    else if (micLive) micLive.getByteFrequencyData(liveFreq);
+    else if (voce) vozAnalyser.getByteFrequencyData(vozFreq);
+    else if (micro) analyser.getByteFrequencyData(freq);
+    const datiVoce = voceLive ? liveFreq : vozFreq;
+    const datiMic = micLive ? liveFreq : freq;
 
     ctx.save();
     ctx.translate(w / 2, h / 2);
     for (let i = 0; i < bars; i++) {
       let v;
-      if (voce) {
+      if (voceLive || voce) {
         /* La voce vive nelle prime bande (sotto i ~4 kHz): distribuirla su
            tutte e 64 lascerebbe metà anello immobile. Si usano solo le bande
            utili e si specchiano sui due lati, così il reattore pulsa
            simmetrico sulle sillabe invece di scorrere come un equalizzatore. */
         const utili = 16;
         const d = Math.abs(bars / 2 - i) / (bars / 2);   // 0 al centro, 1 ai lati
-        v = Math.min(1, (vozFreq[Math.floor(d * (utili - 1))] / 255) * 1.35);
+        v = Math.min(1, (datiVoce[Math.floor(d * (utili - 1))] / 255) * 1.35);
         v = Math.max(v, 0.08);   // nelle pause fra le parole resta acceso, non morto
-      } else if (live) {
-        v = freq[i % freq.length] / 255;
+      } else if (micLive || micro) {
+        v = datiMic[i % datiMic.length] / 255;
       } else {
         const t = Date.now() / 600;
         const amp = speaking ? 0.5 : (processing ? 0.32 : 0.14);
@@ -911,11 +1058,32 @@
   async function loadInfo() {
     try {
       const i = await (await fetch("/api/info")).json();
-      document.getElementById("brain-mode").textContent =
-        i.has_key ? "Gemini · " + i.model : "Locale (nessuna API key)";
+      liveInfo = i;
+      liveDisponibile = !!i.live;
+      liveWrap.hidden = !liveDisponibile;
+      if (window.JarvisLive) window.JarvisLive.configura(i);
+      if (liveDisponibile) {
+        // Acceso di default: è il modo di parlare con Jarvis. La scelta del
+        // signore, se c'è, vince.
+        const salvato = localStorage.getItem(LIVE_KEY);
+        liveBox.checked = salvato === null ? true : salvato === "1";
+      }
+      aggiornaCervello();
+      rebuildVoiceMenu();
     } catch (e) { /* riprovera al prossimo avvio */ }
   }
   loadInfo();
+
+  /* Riga CERVELLO nel pannello: dice chi risponde adesso. */
+  function aggiornaCervello() {
+    const el = document.getElementById("brain-mode");
+    const i = liveInfo;
+    if (!i) return;
+    if (!i.has_key) { el.textContent = "Locale (nessuna API key)"; return; }
+    el.textContent = modoLive()
+      ? "Dal vivo · " + i.live_model + " · voce " + (voceLive || liveDefault)
+      : "Gemini · " + i.model;
+  }
 
   /* ---------- Modelli Gemini: quota residua di oggi, per modello ----------
      Mostra tutta la catena (primario + ripieghi) con la quota giornaliera
@@ -963,6 +1131,154 @@
   }
   pollModels();
   setInterval(pollModels, 5000);
+
+  /* ---------- Conversazione dal vivo: interfaccia ----------
+     Il registro mostra la conversazione come prima: una voce per ogni frase
+     del signore e una per ogni risposta. Dal vivo però il testo arriva a
+     pezzi, mentre si parla: le due voci in costruzione si allungano finché
+     il turno non si chiude. */
+  let liveRigaUtente = null, liveRigaJarvis = null;
+
+  function nuovaVoce(cls) {
+    const e = document.createElement("div");
+    e.className = "entry " + cls;
+    const label = document.createElement("span");
+    label.className = "who";
+    label.textContent = cls === "user" ? "SIGNORE" : "JARVIS";
+    const testo = document.createTextNode("");
+    e.append(label, testo);
+    log.appendChild(e);
+    return { testo };
+  }
+
+  function liveScrivi(cls, pezzo) {
+    if (!pezzo) return;
+    if (cls === "user") {
+      if (!liveRigaUtente) liveRigaUtente = nuovaVoce("user");
+      liveRigaUtente.testo.data += pezzo;
+      caption.textContent = "« " + liveRigaUtente.testo.data.trim() + " »";
+    } else {
+      if (!liveRigaJarvis) liveRigaJarvis = nuovaVoce("jarvis");
+      liveRigaJarvis.testo.data += pezzo;
+      caption.textContent = liveRigaJarvis.testo.data.trim();
+    }
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function liveFineTurno() {
+    liveRigaUtente = null;
+    liveRigaJarvis = null;
+  }
+
+  /* Apre la conversazione (o ci aggiunge il testo, se è già aperta).
+     nascosto: testo per Jarvis che non va nel registro (l'anteprima voce). */
+  function avviaLive(testo, nascosto) {
+    if (!window.JarvisLive) return;
+    if (!liveAttiva()) {
+      zittisciVoceClassica();   // niente voce classica sovrapposta
+      stopListen();             // il microfono ora lo usa la conversazione
+      disarm();
+    }
+    if (testo && !nascosto) {
+      liveRigaUtente = null;
+      addEntry(testo, "user");
+    }
+    // Se il collegamento fallisce, la richiesta scritta o detta con «Jarvis, …»
+    // non si perde: la riceve il cervello classico.
+    if (!liveAttiva()) liveTestoInAttesa = nascosto ? null : (testo || null);
+    window.JarvisLive.start(testo || "");
+  }
+
+  if (window.JarvisLive) {
+    window.JarvisLive.init({
+      send: (obj) => { if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj)); },
+      sendBinary: (buf) => { if (ws && ws.readyState === WebSocket.OPEN) ws.send(buf); },
+      voce: () => voceLive || liveDefault,
+      onState: (s, info) => {
+        if (s === "avvio") {
+          micBtn.classList.add("active");
+          body.classList.add("live-on");
+          setState("thinking");
+          caption.textContent = "Collegamento…";
+        } else if (s === "aperta") {
+          liveTestoInAttesa = null;          // arrivato: niente ripiego
+          setState(liveSuona() ? "speaking" : "listening");
+          if (!liveRigaJarvis && !liveRigaUtente) caption.textContent = "Sì, signore?";
+        } else {                              // spenta
+          micBtn.classList.remove("active");
+          body.classList.remove("live-on");
+          liveFineTurno();
+          if (info !== "errore") caption.textContent = "Ai suoi ordini, signore.";
+          goIdle();
+        }
+      },
+      onSpeaking: (on) => {
+        if (on) setState("speaking");
+        else if (liveAttiva()) setState("listening");
+        svuotaAnnunci();          // le mosse del pilota aspettavano il silenzio
+      },
+      onUserText: (t) => {
+        liveScrivi("user", t);
+        if (!liveSuona()) setState("listening");
+      },
+      onJarvisText: (t) => liveScrivi("jarvis", t),
+      onTurn: () => {
+        liveFineTurno();
+        if (!liveSuona()) setState("listening");
+      },
+      onInterrupted: () => {
+        if (liveRigaJarvis) liveRigaJarvis.testo.data += " …";
+        liveRigaJarvis = null;
+        setState("listening");
+      },
+      onTool: (inizio) => { if (inizio) setState("thinking"); },
+      onPilota: (on) => {
+        pilotaLive = on;
+        // Il pilota racconta le mosse ad alta voce e il microfono non va a
+        // Google: "basta" lo sente il riconoscimento del browser.
+        if (on) startListen();
+        else stopListen();
+      },
+      onError: (m) => {
+        addEntry(m.message || "Conversazione dal vivo non disponibile.", "sys");
+        // Quota finita o modello assente: inutile riprovare a ogni parola.
+        if (m.kind === "quota" || m.kind === "modello" || m.kind === "spenta" || m.kind === "audio") {
+          liveSospesoFino = Date.now() + 10 * 60 * 1000;
+          aggiornaCervello();
+          rebuildVoiceMenu();
+        }
+        const testo = liveTestoInAttesa;
+        liveTestoInAttesa = null;
+        if (testo) sendCommandClassic(testo, true);
+        else speak(m.message || "Conversazione dal vivo non disponibile.");
+      },
+      onMicError: () => {
+        addEntry("Microfono non disponibile per la conversazione dal vivo: puoi scrivere, "
+          + "Jarvis risponde comunque a voce.", "sys");
+      },
+    });
+  }
+
+  liveBox.addEventListener("change", () => {
+    localStorage.setItem(LIVE_KEY, liveBox.checked ? "1" : "0");
+    liveSospesoFino = 0;
+    if (!liveBox.checked && liveAttiva()) window.JarvisLive.stop("modalità classica");
+    aggiornaCervello();
+    rebuildVoiceMenu();
+    addEntry(liveBox.checked
+      ? "Conversazione dal vivo: di' «Jarvis» o clicca il microfono, poi parla liberamente. "
+        + "Puoi interromperlo quando vuoi; dopo un po' di silenzio torna in attesa."
+      : "Modalità classica: un comando alla volta, voce sintetica.", "sys");
+  });
+
+  /* Il browser concede l'audio solo dopo un gesto del signore: al primo clic
+     o tasto si preparano i contesti, così una conversazione aperta poi a voce
+     («Jarvis») non resta muta. */
+  const sbloccaAudio = () => {
+    if (window.JarvisLive && liveDisponibile) window.JarvisLive.sblocca();
+  };
+  document.addEventListener("click", sbloccaAudio);
+  document.addEventListener("keydown", sbloccaAudio);
 
   runBoot();
   connect();

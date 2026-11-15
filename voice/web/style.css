@@ -158,6 +158,15 @@ body[data-state="listening"] .core{animation:breathe 2s ease-in-out infinite}
 .toggle{display:flex;align-items:center;gap:8px;font-size:11px;letter-spacing:2px;
   cursor:pointer;-webkit-user-select:none;user-select:none;white-space:nowrap}
 .toggle input{accent-color:var(--glow);width:16px;height:16px}
+/* display:flex vincerebbe sull'attributo hidden: lo si ripristina a mano. */
+.toggle[hidden]{display:none}
+
+/* Conversazione dal vivo in corso: un'etichetta accanto allo stato e il
+   reattore con un alone in più, così si vede che Jarvis sta ascoltando tutto. */
+body.live-on .status-readout::before{content:"DAL VIVO";font-size:9px;letter-spacing:2px;
+  padding:2px 6px;border:1px solid var(--glow);border-radius:4px;color:var(--glow);
+  box-shadow:0 0 8px var(--glow-dim)}
+body.live-on .ring-3{opacity:.9;box-shadow:0 0 24px var(--glow-dim)}
 .voice-select{background:rgba(0,0,0,.3);border:1px solid var(--line);border-radius:8px;
   color:var(--text);font-family:var(--font);font-size:11px;letter-spacing:1px;
   padding:8px 10px;outline:none;cursor:pointer;max-width:190px}
